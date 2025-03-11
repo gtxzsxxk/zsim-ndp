@@ -731,6 +731,93 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
         case RISCV_OPCODE_AUIPC:
             emitBasicOp(instr, uops, 1, PORT_1);  // Like LEA
             break;
+        case RISCV_OPCODE_ATOMIC:
+            switch (funct3) {
+                case 0x2: // Word operations
+                case 0x3: // Double word operations
+                    uint8_t amo_type = funct7 >> 2;
+                    switch (amo_type) {
+                        case 0x0: // AMOADD
+                            {
+                                uint32_t lats[] = {2, 2};
+                                uint8_t ports[] = {PORTS_015, PORTS_015};
+                                emitChainedOp(instr, uops, 2, lats, ports);
+                            }
+                            break;
+                        case 0x1: // AMOSWAP
+                            /* TODO: check with uops */
+                            emitXchg(instr, uops);
+                            break;
+                        case 0x2: // LR (Load Reserved)
+                            /* TODO: check with the register */
+                            emitLoad(instr, 0, uops, REG_LOAD_TEMP);
+                            break;
+                        case 0x3: // SC (Store Conditional)
+                            {
+                                uint32_t lats[] = {2, 1};
+                                uint8_t ports[] = {PORTS_015, PORTS_015};
+                                emitChainedOp(instr, uops, 2, lats, ports);
+                            }
+                            break;
+                        case 0x4: // AMOXOR
+                        case 0x8: // AMOOR
+                        case 0xC: // AMOAND
+                        case 0x10: // AMOMIN
+                        case 0x14: // AMOMAX
+                        case 0x18: // AMOMINU
+                        case 0x1C: // AMOMAXU
+                            {
+                                uint32_t lats[] = {2, 2, 2};
+                                uint8_t ports[] = {PORTS_015, PORTS_015, PORTS_015};
+                                emitChainedOp(instr, uops, 3, lats, ports);
+                            }
+                            break;
+                        default:
+                            inaccurate = true;
+                    }
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
+        case RISCV_OPCODE_SYSTEM:
+            switch (funct3) {
+                case 0x0: // ECALL, EBREAK, MRET, SRET, URET, WFI
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x1: // CSRRW
+                case 0x2: // CSRRS
+                case 0x3: // CSRRC
+                case 0x5: // CSRRWI
+                case 0x6: // CSRRSI
+                case 0x7: // CSRRCI
+                    // CSR operations are more complex, model as 2 chained operations
+                    {
+                        uint32_t lats[] = {2, 2};
+                        uint8_t ports[] = {PORTS_015, PORTS_015};
+                        emitChainedOp(instr, uops, 2, lats, ports);
+                    }
+                    break;
+                case 9: // SFENCE.VMA
+                    /* TODO: check the latency value */
+                    emitFence(uops, 25);
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
+        case RISCV_OPCODE_FENCE:
+            switch (funct3) {
+                case 0x0: // FENCE
+                    emitFence(uops, 9);
+                    break;
+                case 0x1: // FENCE.I
+                    emitFence(uops, 12);
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
     }
 
 
