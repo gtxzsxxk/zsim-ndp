@@ -651,6 +651,67 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                     inaccurate = true;
             }
             break;
+        case RISCV_OPCODE_INTEGER_IMM:
+            switch (funct3) {
+                case 0x0: // ADDI
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x1: // SLLI
+                    emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    break;
+                case 0x2: // SLTI
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x3: // SLTIU
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x4: // XORI
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x5: // SRLI/SRAI
+                    uint32_t shift_type = INS_ShiftType(ins);
+                    if (shift_type == 0x00) {
+                        // SRLI
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (shift_type == 0x10) {
+                        // SRAI
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    }
+                    break;
+                case 0x6: // ORI
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x7: // ANDI
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
+            
+        // RV64I I-type word instructions (opcode = 0x1B)
+        case RISCV_OPCODE_INTEGER_IMM_32:
+            switch (funct3) {
+                case 0x0: // ADDIW
+                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    break;
+                case 0x1: // SLLIW
+                    emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    break;
+                case 0x5: // SRLIW/SRAIW
+                    uint32_t shift_type = INS_ShiftType(ins);
+                    if (shift_type == 0x00) {
+                        // SRLIW
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (shift_type == 0x10) {
+                        // SRAIW
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    }
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
     }
 
 

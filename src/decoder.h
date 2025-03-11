@@ -101,9 +101,11 @@ typedef std::vector<DynUop> DynUopVec;
 typedef uint32_t INS;
 
 /* RISC-V definitions */
-#define RISCV_OPCODE_ATOMIC             0x2f
-#define RISCV_OPCODE_INTEGER            0x33
-#define RISCV_OPCODE_INTEGER_32         0x3b
+#define RISCV_OPCODE_ATOMIC                 0x2f
+#define RISCV_OPCODE_INTEGER                0x33
+#define RISCV_OPCODE_INTEGER_IMM            0x13
+#define RISCV_OPCODE_INTEGER_32             0x3b
+#define RISCV_OPCODE_INTEGER_IMM_32         0x1b
 
 //Nehalem-style decoder. Fully static for now
 class Decoder {
