@@ -106,6 +106,13 @@ typedef uint32_t INS;
 #define RISCV_OPCODE_INTEGER_IMM            0x13
 #define RISCV_OPCODE_INTEGER_32             0x3b
 #define RISCV_OPCODE_INTEGER_IMM_32         0x1b
+#define RISCV_OPCODE_LOAD                   0x03
+#define RISCV_OPCODE_STORE                  0x23
+#define RISCV_OPCODE_BRANCH                 0x63
+#define RISCV_OPCODE_JAL                    0x6f
+#define RISCV_OPCODE_JALR                   0x67
+#define RISCV_OPCODE_LUI                    0x37
+#define RISCV_OPCODE_AUIPC                  0x67
 
 //Nehalem-style decoder. Fully static for now
 class Decoder {

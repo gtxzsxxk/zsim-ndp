@@ -712,6 +712,25 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                     inaccurate = true;
             }
             break;
+        case RISCV_OPCODE_LOAD:
+            /* TODO: Make sure it is loads and how the uop should be */
+            emitLoads(instr, uops);
+            break;
+        case RISCV_OPCODE_STORE:
+            emitStores(instr, uops);
+            break;
+        case RISCV_OPCODE_BRANCH:
+        case RISCV_OPCODE_JAL:
+        case RISCV_OPCODE_JALR:
+            // All branches have the same uop profile in this model
+            emitBasicOp(instr, uops, 1, PORT_5);
+            break;
+        case RISCV_OPCODE_LUI:
+            emitBasicMove(instr, uops, 1, PORTS_015);
+            break;
+        case RISCV_OPCODE_AUIPC:
+            emitBasicOp(instr, uops, 1, PORT_1);  // Like LEA
+            break;
     }
 
 
