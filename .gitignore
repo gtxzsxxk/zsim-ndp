@@ -8,3 +8,6 @@ zsim-cmp.h5
 out.cfg
 heartbeat
 myPatchRoot/
+.cache/
+pin.log
+compile_commands.json
