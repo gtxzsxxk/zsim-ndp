@@ -100,6 +100,11 @@ struct BblInfo;  // defined in core.h
 typedef std::vector<DynUop> DynUopVec;
 typedef uint32_t INS;
 
+/* RISC-V definitions */
+#define RISCV_OPCODE_ATOMIC             0x2f
+#define RISCV_OPCODE_INTEGER            0x33
+#define RISCV_OPCODE_INTEGER_32         0x3b
+
 //Nehalem-style decoder. Fully static for now
 class Decoder {
     private:
@@ -122,8 +127,6 @@ class Decoder {
 
             private:
                 static uint8_t riscvOpCode(INS &ins);
-                static uint8_t riscvOpIsLoad(INS &ins);
-                static uint8_t riscvOpIsStore(INS &ins);
                 //Put registers in some canonical order -- non-flags first
                 void reorderRegs(uint32_t* regArray, uint32_t numRegs);
         };
@@ -138,6 +141,10 @@ class Decoder {
 #endif
 
     private:
+        static uint8_t riscvInsOpCode(INS ins);
+        static uint8_t riscvInsFunct3(INS ins);
+        static uint8_t riscvInsFunct7(INS ins);
+        static uint8_t riscvInsIsAtomic(INS ins);
         //Return true if inaccurate decoding, false if accurate
         static bool decodeInstr(INS ins, DynUopVec& uops);
 

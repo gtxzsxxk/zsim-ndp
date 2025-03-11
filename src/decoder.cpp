@@ -56,18 +56,23 @@ void DynUop::clear() {
 
 Decoder::Instr::Instr(INS _ins) : ins(_ins), numLoads(0), numInRegs(0), numOutRegs(0), numStores(0) {
     auto op = riscvOpCode(_ins);
-    bool read = INS_OperandRead(ins, op);
-    bool write = INS_OperandWritten(ins, op);
-    assert(read || write);
-    if (INS_OperandIsMemory(ins, op)) {
-        if (read) loadOps[numLoads++] = op;
-        if (write) storeOps[numStores++] = op;
-    } else if (INS_OperandIsReg(ins, op) && INS_OperandReg(ins, op)) { //it's apparently possible to get INS_OperandIsReg to be true and an invalid reg ... WTF Pin?
-        REG reg = INS_OperandReg(ins, op);
-        assert(reg);  // can't be invalid
-        reg = REG_FullRegName(reg);  // eax -> rax, etc; o/w we'd miss a bunch of deps!
-        if (read) inRegs[numInRegs++] = reg;
-        if (write) outRegs[numOutRegs++] = reg;
+    // bool read = INS_OperandRead(ins, op);
+    // bool write = INS_OperandWritten(ins, op);
+    // assert(read || write);
+    // if (INS_OperandIsMemory(ins, op)) {
+    //     if (read) loadOps[numLoads++] = op;
+    //     if (write) storeOps[numStores++] = op;
+    // } else if (INS_OperandIsReg(ins, op) && INS_OperandReg(ins, op)) { //it's apparently possible to get INS_OperandIsReg to be true and an invalid reg ... WTF Pin?
+    //     REG reg = INS_OperandReg(ins, op);
+    //     assert(reg);  // can't be invalid
+    //     reg = REG_FullRegName(reg);  // eax -> rax, etc; o/w we'd miss a bunch of deps!
+    //     if (read) inRegs[numInRegs++] = reg;
+    //     if (write) outRegs[numOutRegs++] = reg;
+    // }
+    if (riscvOpIsLoad(_ins)) {
+        loadOps[numLoads++] = op;
+    } else if (riscvOpIsStore(_ins)) {
+        storeOps[numStores++] = op;
     }
 
     //By convention, we move flags regs to the end
@@ -77,10 +82,6 @@ Decoder::Instr::Instr(INS _ins) : ins(_ins), numLoads(0), numInRegs(0), numOutRe
 
 static inline bool isFlagsReg(uint32_t reg) {
     return (reg == REG_EFLAGS || reg == REG_FLAGS || reg == REG_MXCSR);
-}
-
-uint8_t Decoder::Instr::riscvOpCode(INS &ins) {
-    return ins & 0x7f;
 }
 
 void Decoder::Instr::reorderRegs(uint32_t* array, uint32_t regs) {
@@ -497,20 +498,159 @@ void Decoder::dropStackRegister(Instr& instr) {
     else reportUnhandledCase(instr, "dropStackRegister (RSP found)");
 }
 
+uint8_t Decoder::riscvInsOpCode(INS ins) {
+    return ins & 0x7f;
+}
+
+uint8_t Decoder::riscvInsFunct3(INS ins) {
+    return (ins >> 12) & 0x03;
+}
+
+uint8_t Decoder::riscvInsFunct7(INS ins) {
+    return (ins >> 25) & 0x7f;
+}
+
+uint8_t Decoder::riscvInsIsAtomic(INS ins) {
+    return riscvInsOpCode(ins) == RISCV_OPCODE_ATOMIC;
+}
 
 bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
     uint32_t initialUops = uops.size();
     bool inaccurate = false;
-    xed_category_enum_t category = (xed_category_enum_t) INS_Category(ins);
-    xed_iclass_enum_t opcode = (xed_iclass_enum_t) INS_Opcode(ins);
+    uint8_t opcode = riscvInsOpCode(ins);
+    uint8_t funct3 = riscvInsFunct3(ins);
+    uint8_t funct7 = riscvInsFunct7(ins);
 
     Instr instr(ins);
 
     bool isLocked = false;
     // NOTE(dsm): IsAtomicUpdate == xchg or LockPrefix (xchg has in implicit lock prefix)
-    if (INS_IsAtomicUpdate(instr.ins)) {
+    if (riscvInsIsAtomic(ins)) {
         isLocked = true;
         emitFence(uops, 0); //serialize the initial load w.r.t. all prior stores
+    }
+
+    switch (opcode) {
+        case RISCV_OPCODE_INTEGER:
+            switch (funct3) {
+                case 0x0: // ADD/SUB
+                    if (funct7 == 0x00) {
+                        // ADD
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x20) {
+                        // SUB
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // MUL (M extension)
+                        emitMul(instr, uops);
+                    }
+                    break;
+                case 0x1: // SLL
+                    if (funct7 == 0x00) {
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (funct7 == 0x01) {
+                        // MULH (M extension)
+                        emitMul(instr, uops);
+                    }
+                    break;
+                case 0x2: // SLT
+                    if (funct7 == 0x00) {
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // MULHSU (M extension)
+                        emitMul(instr, uops);
+                    }
+                    break;
+                case 0x3: // SLTU
+                    if (funct7 == 0x00) {
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // MULHU (M extension)
+                        emitMul(instr, uops);
+                    }
+                    break;
+                case 0x4: // XOR
+                    if (funct7 == 0x00) {
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // DIV (M extension)
+                        emitDiv(instr, uops);
+                    }
+                    break;
+                case 0x5: // SRL/SRA
+                    if (funct7 == 0x00) {
+                        // SRL
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (funct7 == 0x20) {
+                        // SRA
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (funct7 == 0x01) {
+                        // DIVU (M extension)
+                        emitDiv(instr, uops);
+                    }
+                    break;
+                case 0x6: // OR
+                    if (funct7 == 0x00) {
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // REM (M extension)
+                        emitDiv(instr, uops);
+                    }
+                    break;
+                case 0x7: // AND
+                    if (funct7 == 0x00) {
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // REMU (M extension)
+                        emitDiv(instr, uops);
+                    }
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
+        case RISCV_OPCODE_INTEGER_32:
+            switch (funct3) {
+                case 0x0: // ADDW/SUBW
+                    if (funct7 == 0x00) {
+                        // ADDW
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x20) {
+                        // SUBW
+                        emitBasicOp(instr, uops, 1, PORTS_015);
+                    } else if (funct7 == 0x01) {
+                        // MULW (M extension)
+                        emitMul(instr, uops);
+                    }
+                    break;
+                case 0x1: // SLLW
+                    emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    break;
+                case 0x4: // DIVW (M extension)
+                    emitDiv(instr, uops);
+                    break;
+                case 0x5: // SRLW/SRAW
+                    if (funct7 == 0x00) {
+                        // SRLW
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (funct7 == 0x20) {
+                        // SRAW
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                    } else if (funct7 == 0x01) {
+                        // DIVUW (M extension)
+                        emitDiv(instr, uops);
+                    }
+                    break;
+                case 0x6: // REMW (M extension)
+                    emitDiv(instr, uops);
+                    break;
+                case 0x7: // REMUW (M extension)
+                    emitDiv(instr, uops);
+                    break;
+                default:
+                    inaccurate = true;
+            }
+            break;
     }
 
 
