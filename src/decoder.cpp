@@ -713,10 +713,12 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
             }
             break;
         case RISCV_OPCODE_LOAD:
+        case RISCV_OPCODE_LOAD_FP:
             /* TODO: Make sure it is loads and how the uop should be */
             emitLoads(instr, uops);
             break;
         case RISCV_OPCODE_STORE:
+        case RISCV_OPCODE_STORE_FP:
             emitStores(instr, uops);
             break;
         case RISCV_OPCODE_BRANCH:
@@ -816,6 +818,96 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                     break;
                 default:
                     inaccurate = true;
+            }
+            break;
+        case RISCV_OPCODE_MADD_FP: // FMADD.S, FMADD.D
+        case RISCV_OPCODE_MSUB_FP: // FMSUB.S, FMSUB.D
+        case RISCV_OPCODE_NMSUB_FP: // FNMSUB.S, FNMSUB.D
+        case RISCV_OPCODE_NMADD_FP: // FNMADD.S, FNMADD.D
+            {
+                uint8_t fmt = (ins >> 25) & 0x3;
+                if (fmt == 0x0) { // Single precision
+                    emitBasicOp(instr, uops, 4, PORT_0);
+                } else if (fmt == 0x1) { // Double precision
+                    emitBasicOp(instr, uops, 5, PORT_0);
+                } else {
+                    inaccurate = true;
+                }
+            }
+            break;
+        case RISCV_OPCODE_FP: // Floating point operations
+            {
+                uint32_t fmt = (ins >> 25) & 0x3;
+                uint32_t fp_opcode = ins >> 27;
+                
+                switch (fp_opcode) {
+                    case 0x0: // FADD.S/FADD.D
+                        if (fmt == 0x0) { // FADD.S
+                            emitBasicOp(instr, uops, 3, PORT_1);
+                        } else if (fmt == 0x1) { // FADD.D
+                            emitBasicOp(instr, uops, 3, PORT_1);
+                        }
+                        break;
+                    case 0x1: // FSUB.S/FSUB.D
+                        if (fmt == 0x0) { // FSUB.S
+                            emitBasicOp(instr, uops, 3, PORT_1);
+                        } else if (fmt == 0x1) { // FSUB.D
+                            emitBasicOp(instr, uops, 3, PORT_1);
+                        }
+                        break;
+                    case 0x2: // FMUL.S/FMUL.D
+                        if (fmt == 0x0) { // FMUL.S
+                            emitBasicOp(instr, uops, 4, PORT_0);
+                        } else if (fmt == 0x1) { // FMUL.D
+                            emitBasicOp(instr, uops, 5, PORT_0);
+                        }
+                        break;
+                    case 0x3: // FDIV.S/FDIV.D
+                        if (fmt == 0x0) { // FDIV.S
+                            /* TODO: check this */
+                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
+                        } else if (fmt == 0x1) { // FDIV.D
+                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
+                        }
+                        break;
+                    case 0x4: // FSGNJ.S/FSGNJ.D, FSGNJN.S/FSGNJN.D, FSGNJX.S/FSGNJX.D
+                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                        break;
+                    case 0x5: // FMIN.S/FMIN.D, FMAX.S/FMAX.D
+                        emitBasicOp(instr, uops, 3, PORT_1);
+                        break;
+                    case 0x6: // FCVT.W.S/FCVT.W.D, FCVT.WU.S/FCVT.WU.D
+                        emitBasicOp(instr, uops, 3+2 /*domain change*/, PORT_1);
+                        break;
+                    case 0x7: // FMV.X.W/FMV.X.D, FCLASS.S/FCLASS.D
+                        emitBasicOp(instr, uops, 1+2 /*domain change*/, PORT_0);
+                        break;
+                    case 0x8: // FCMP.S/FCMP.D (FEQ, FLT, FLE)
+                        emitBasicOp(instr, uops, 3, PORT_1);
+                        break;
+                    case 0x9: // FCVT.S.W/FCVT.S.D, FCVT.S.WU/FCVT.D.WU
+                        emitBasicOp(instr, uops, 3+2 /*domain change*/, PORT_1);
+                        break;
+                    case 0xA: // FMV.W.X/FMV.D.X
+                        emitBasicOp(instr, uops, 1+2 /*domain change*/, PORT_0);
+                        break;
+                    case 0xB: // FCVT.D.S/FCVT.S.D
+                        if (fmt == 0x0) { // FCVT.D.S
+                            emitBasicOp(instr, uops, 1, PORT_0);
+                        } else if (fmt == 0x1) { // FCVT.S.D
+                            emitConvert2Op(instr, uops, 2, 2, PORT_1, PORT_5);
+                        }
+                        break;
+                    case 0xC: // FSQRT.S/FSQRT.D
+                        if (fmt == 0x0) { // FSQRT.S
+                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
+                        } else if (fmt == 0x1) { // FSQRT.D
+                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
+                        }
+                        break;
+                    default:
+                        inaccurate = true;
+                }
             }
             break;
     }
