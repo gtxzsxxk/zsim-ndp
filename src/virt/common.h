@@ -31,7 +31,6 @@
 
 #include "galloc.h"
 #include "log.h"
-#include "pin.H"
 #include "virt/virt.h"
 
 struct PrePatchArgs {

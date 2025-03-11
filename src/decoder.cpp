@@ -35,9 +35,6 @@
 #include "locks.h"
 #include "log.h"
 
-extern "C" {
-#include "xed-interface.h"
-}
 
 //XED expansion macros (enable us to type opcodes at a reasonable speed)
 #define XC(cat) (XED_CATEGORY_##cat)
@@ -58,21 +55,19 @@ void DynUop::clear() {
 }
 
 Decoder::Instr::Instr(INS _ins) : ins(_ins), numLoads(0), numInRegs(0), numOutRegs(0), numStores(0) {
-    uint32_t numOperands = INS_OperandCount(ins);
-    for (uint32_t op = 0; op < numOperands; op++) {
-        bool read = INS_OperandRead(ins, op);
-        bool write = INS_OperandWritten(ins, op);
-        assert(read || write);
-        if (INS_OperandIsMemory(ins, op)) {
-            if (read) loadOps[numLoads++] = op;
-            if (write) storeOps[numStores++] = op;
-        } else if (INS_OperandIsReg(ins, op) && INS_OperandReg(ins, op)) { //it's apparently possible to get INS_OperandIsReg to be true and an invalid reg ... WTF Pin?
-            REG reg = INS_OperandReg(ins, op);
-            assert(reg);  // can't be invalid
-            reg = REG_FullRegName(reg);  // eax -> rax, etc; o/w we'd miss a bunch of deps!
-            if (read) inRegs[numInRegs++] = reg;
-            if (write) outRegs[numOutRegs++] = reg;
-        }
+    auto op = riscvOpCode(_ins);
+    bool read = INS_OperandRead(ins, op);
+    bool write = INS_OperandWritten(ins, op);
+    assert(read || write);
+    if (INS_OperandIsMemory(ins, op)) {
+        if (read) loadOps[numLoads++] = op;
+        if (write) storeOps[numStores++] = op;
+    } else if (INS_OperandIsReg(ins, op) && INS_OperandReg(ins, op)) { //it's apparently possible to get INS_OperandIsReg to be true and an invalid reg ... WTF Pin?
+        REG reg = INS_OperandReg(ins, op);
+        assert(reg);  // can't be invalid
+        reg = REG_FullRegName(reg);  // eax -> rax, etc; o/w we'd miss a bunch of deps!
+        if (read) inRegs[numInRegs++] = reg;
+        if (write) outRegs[numOutRegs++] = reg;
     }
 
     //By convention, we move flags regs to the end
@@ -82,6 +77,10 @@ Decoder::Instr::Instr(INS _ins) : ins(_ins), numLoads(0), numInRegs(0), numOutRe
 
 static inline bool isFlagsReg(uint32_t reg) {
     return (reg == REG_EFLAGS || reg == REG_FLAGS || reg == REG_MXCSR);
+}
+
+uint8_t Decoder::Instr::riscvOpCode(INS &ins) {
+    return ins & 0x7f;
 }
 
 void Decoder::Instr::reorderRegs(uint32_t* array, uint32_t regs) {

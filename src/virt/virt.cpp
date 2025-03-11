@@ -54,23 +54,6 @@ PostPatchFn WarnTimingRelated(PrePatchArgs args) {
 #include "virt/patchdefs.h"
 #undef PF
 
-void VirtInit() {
-    for (uint32_t i = 0; i < MAX_SYSCALLS; i++) prePatchFunctions[i] = NullPatch;
-
-    // Issue warnings on timing-sensitive syscalls
-    uint32_t timingSyscalls[] = {SYS_select, SYS_getitimer, SYS_alarm, SYS_setitimer, SYS_semop,
-            SYS_gettimeofday, SYS_times, SYS_rt_sigtimedwait, SYS_time, SYS_futex, SYS_mq_timedsend,
-            SYS_mq_timedreceive, SYS_pselect6, SYS_ppoll};
-    for (uint32_t syscall : timingSyscalls) {
-        prePatchFunctions[syscall] = WarnTimingRelated;
-    }
-
-    // Bind all patch functions
-    #define PF(syscall, pfn) prePatchFunctions[syscall] = pfn;
-    #include "virt/patchdefs.h"
-    #undef PF
-}
-
 
 // Dispatch methods
 void VirtSyscallEnter(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, const char* patchRoot, bool isNopThread) {

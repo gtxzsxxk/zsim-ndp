@@ -26,9 +26,9 @@
 #ifndef DECODER_H_
 #define DECODER_H_
 
-#include <stdint.h>
+#include <cstdint>
+#include <cstddef>
 #include <vector>
-#include "pin.H"
 
 // Uncomment to get a count of BBLs run. This is currently used to get a distribution of inaccurate instructions decoded that are actually run
 // NOTE: This is not multiprocess-safe
@@ -98,6 +98,7 @@ struct BblInfo;  // defined in core.h
 #define MAX_REGISTERS (REG_EXEC_TEMP + 64)
 
 typedef std::vector<DynUop> DynUopVec;
+typedef uint32_t INS;
 
 //Nehalem-style decoder. Fully static for now
 class Decoder {
@@ -120,6 +121,9 @@ class Decoder {
             explicit Instr(INS _ins);
 
             private:
+                static uint8_t riscvOpCode(INS &ins);
+                static uint8_t riscvOpIsLoad(INS &ins);
+                static uint8_t riscvOpIsStore(INS &ins);
                 //Put registers in some canonical order -- non-flags first
                 void reorderRegs(uint32_t* regArray, uint32_t numRegs);
         };
@@ -187,5 +191,9 @@ class Decoder {
         static bool canFuse(INS ins);
         static bool decodeFusedInstrs(INS ins, DynUopVec& uops);
 };
+
+typedef uint64_t THREADID;
+typedef uint64_t ADDRINT;
+typedef bool BOOL;
 
 #endif  // DECODER_H_

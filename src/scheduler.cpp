@@ -28,7 +28,6 @@
 #include <fstream>
 #include <regex.h>  // POSIX regex instead of C++11 regex
 #include "config.h" // for ParseList
-#include "pin.H"
 #include "process_tree.h"
 #include "profile_stats.h"
 #include "str.h"

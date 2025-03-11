@@ -29,8 +29,6 @@
 
 // External virt interface
 
-#include "pin.H"
-
 enum PostPatchAction {
     PPA_NOTHING,
     PPA_USE_RETRY_PTRS,

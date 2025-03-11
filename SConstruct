@@ -33,23 +33,6 @@ def buildSim(cppFlags, dir, type, pgo=None):
         env['CC'] = 'icc'
         env['CXX'] = 'icpc -ipo'
 
-    # Required paths
-    if "PINPATH" in os.environ:
-        PINPATH = os.environ["PINPATH"]
-    else:
-        print("ERROR: You need to define the $PINPATH environment variable with Pin's path")
-        sys.exit(1)
-
-    # Pin 3 introduces PinCRT.
-    withPinCrt = os.path.exists(joinpath(PINPATH, "extras/crt"))
-    if withPinCrt:
-        pinCrtDir = joinpath(PINPATH, "extras/crt")
-        pinCrtLibDir = joinpath(PINPATH, "intel64/runtime/pincrt")
-        assert os.path.exists(pinCrtDir)
-        assert os.path.exists(pinCrtLibDir)
-    # Pin 3.24 starts to support most C++11
-    withPinCrtCXX11 = os.path.exists(joinpath(PINPATH, "extras/cxx"))
-
     ROOT = Dir('.').abspath
 
     # NOTE: These flags are for the 28/02/2011 2.9 PIN kit (rev39599). Older versions will not build.
@@ -63,44 +46,7 @@ def buildSim(cppFlags, dir, type, pgo=None):
     env["CPPFLAGS"] += " -fabi-version=2"
     env["CPPFLAGS"] += " -Wno-unused-function"
 
-    # Add more flags and system paths for pintool if with PinCRT.
-    if withPinCrt:
-        env["CPPFLAGS"] += " -D__PIN__=1 -DPIN_CRT=1"
-        env["CPPFLAGS"] += " -fno-exceptions -fno-rtti -funwind-tables -fasynchronous-unwind-tables"
-        env["CPPFLAGS"] += " -Ddynamic_cast=static_cast"
-        if withPinCrtCXX11:
-            env["CPPFLAGS"] += " -isystem " + joinpath(PINPATH, "extras/cxx/include")
-        else:
-            env["CPPFLAGS"] += " -isystem " + joinpath(PINPATH, "extras/stlport/include")
-            env["CPPFLAGS"] += " -isystem " + joinpath(PINPATH, "extras/libstdc++/include")
-        env["CPPFLAGS"] += " -isystem " + joinpath(PINPATH, "extras/libunwind/include")
-        env["CPPFLAGS"] += " -isystem " + joinpath(pinCrtDir, "include")
-        env["CPPFLAGS"] += " -isystem " + joinpath(pinCrtDir, "include/arch-x86_64")
-        env["CPPFLAGS"] += " -isystem " + joinpath(pinCrtDir, "include/kernel/uapi")
-        env["CPPFLAGS"] += " -isystem " + joinpath(pinCrtDir, "include/kernel/uapi/asm-x86")
-
-    # Pin 2.12+ kits have changed the layout of includes, detect whether we need
-    # source/include/ or source/include/pin/
-    pinInclDir = joinpath(PINPATH, "source/include/")
-    if not os.path.exists(joinpath(pinInclDir, "pin.H")):
-        pinInclDir = joinpath(pinInclDir, "pin")
-        assert os.path.exists(joinpath(pinInclDir, "pin.H"))
-
-    # Pin 2.14 changes location of XED
-    # Pin 3 changes location of XED again
-    xedName = "xed2"  # used below
-    xedPath = joinpath(PINPATH, "extras/" + xedName + "-intel64/include")
-    if not os.path.exists(xedPath):
-        xedName = "xed"
-        xedPath = joinpath(PINPATH, "extras/" + xedName + "-intel64/include")
-        if os.path.exists(joinpath(xedPath, "xed")):
-            xedPath = joinpath(xedPath, "xed")
-        assert os.path.exists(xedPath)
-
-    env["CPPPATH"] = [xedPath,
-            pinInclDir, joinpath(pinInclDir, "gen"),
-            joinpath(PINPATH, "extras/components/include")]
-
+    env["CPPPATH"] = []
     # Perform trace logging?
     ##env["CPPFLAGS"] += " -D_LOG_TRACE_=1"
 
@@ -109,47 +55,6 @@ def buildSim(cppFlags, dir, type, pgo=None):
 
     # Be a Warning Nazi? (recommended)
     # env["CPPFLAGS"] += " -Werror "
-
-    # Enables lib and harness to use the same info/log code,
-    # but only lib uses pin locks for thread safety
-    env["PINCPPFLAGS"] = " -DMT_SAFE_LOG "
-
-    # PIN-specific libraries
-    env["PINLINKFLAGS"] = " -Wl,--hash-style=sysv -Wl,-Bsymbolic -Wl,--version-script=" + joinpath(pinInclDir, "pintool.ver")
-
-    # To prime system libs, we include /usr/lib and /usr/lib/x86_64-linux-gnu
-    # first in lib path. In particular, this solves the issue that, in some
-    # systems, Pin's libelf takes precedence over the system's, but it does not
-    # include symbols that we need or it's a different variant (we need
-    # libelfg0-dev in Ubuntu systems)
-    # NOTE(gaomy May 2019): PinCRT use its own libs and the system libs are
-    # disallowed, so libelf dependency is removed.
-    env["PINLIBPATH"] = [joinpath(PINPATH, "extras/" + xedName + "-intel64/lib"),
-            joinpath(PINPATH, "intel64/lib"), joinpath(PINPATH, "intel64/lib-ext")]
-
-    # Libdwarf is provided in static and shared variants, Ubuntu only provides
-    # static, and I don't want to add -R<pin path/intel64/lib-ext> because
-    # there are some other old libraries provided there (e.g., libelf) and I
-    # want to use the system libs as much as possible. So link directly to the
-    # static version of libdwarf.
-
-    # Pin 2.14 uses unambiguous libpindwarf
-    # Pin 3 uses libpin3dwarf
-    # Pin 3.25 changes back to libpindwarf and changes its path
-    pindwarfPath = joinpath(PINPATH, "intel64/lib-ext/libdwarf.a")
-    pindwarfLib = File(pindwarfPath)
-    if not os.path.exists(pindwarfPath):
-        pindwarfPath = joinpath(PINPATH, "intel64/lib-ext/libpindwarf.a")
-        pindwarfLib = "pindwarf"
-        if not os.path.exists(pindwarfPath):
-            pindwarfPath = joinpath(PINPATH, "intel64/lib-ext/libpin3dwarf.so")
-            pindwarfLib = "pin3dwarf"
-            if not os.path.exists(pindwarfPath):
-                pindwarfPath = joinpath(PINPATH, "intel64/lib/libpindwarf.so")
-                pindwarfLib = "pindwarf"
-                assert os.path.exists(pindwarfPath)
-
-    env["PINLIBS"] = ["pin", "xed", pindwarfLib]
 
     # Non-pintool libraries
     env["LIBPATH"] = []
@@ -177,26 +82,20 @@ def buildSim(cppFlags, dir, type, pgo=None):
     if "MBEDTLSPATH" in os.environ:
         MBEDTLSPATH = os.environ["MBEDTLSPATH"]
         env["LINKFLAGS"] += " -Wl,-R" + joinpath(MBEDTLSPATH, "lib")
-        env["PINLIBPATH"] += [joinpath(MBEDTLSPATH, "lib")]
         env["CPPPATH"] += [joinpath(MBEDTLSPATH, "include")]
-        env["PINLIBS"] += ["mbedcrypto"]
         env["CPPFLAGS"] += " -D_WITH_MBEDTLS_=1 "
 
     if "POLARSSLPATH" in os.environ:
         POLARSSLPATH = os.environ["POLARSSLPATH"]
         env["LINKFLAGS"] += " -Wl,-R" + joinpath(POLARSSLPATH, "lib")
-        env["PINLIBPATH"] += [joinpath(POLARSSLPATH, "library")]
         env["CPPPATH"] += [joinpath(POLARSSLPATH, "include")]
-        env["PINLIBS"] += ["polarssl"]
         env["CPPFLAGS"] += " -D_WITH_POLARSSL_=1 "
 
     # Only include DRAMSim if available
     if "DRAMSIMPATH" in os.environ:
         DRAMSIMPATH = os.environ["DRAMSIMPATH"]
         env["LINKFLAGS"] += " -Wl,-R" + DRAMSIMPATH
-        env["PINLIBPATH"] += [DRAMSIMPATH]
         env["CPPPATH"] += [DRAMSIMPATH]
-        env["PINLIBS"] += ["dramsim"]
         env["CPPFLAGS"] += " -D_WITH_DRAMSIM_=1 "
 
     # addr2line from GNU binutils is used as an independent third-party executable called by zsim when backtracing bugs.
@@ -208,47 +107,8 @@ def buildSim(cppFlags, dir, type, pgo=None):
 
     env["CPPPATH"] += ["."]
 
-    # PinCRT libs. These libs are needed by both the shared lib pintool and the utilities.
-    if withPinCrt:
-        # PinCRT has issues, and we allow to apply our patches to it.
-        if "PINCRTPATCHPATH" in os.environ:
-            PINCRTPATCHPATH = os.environ["PINCRTPATCHPATH"]
-            env["LINKFLAGS"] += " -Wl,-R" + PINCRTPATCHPATH + " -Wl,--no-as-needed"
-            env["LIBPATH"] += [PINCRTPATCHPATH]
-            env["LIBS"] += ["pincrtpatch"]
-        env["LINKFLAGS"] += " -nostdlib -Wl,-R" + pinCrtLibDir
-        env["LIBPATH"] += [pinCrtLibDir]
-        if withPinCrtCXX11:
-            env["LIBS"] += ["dl-dynamic", "m-dynamic", "c-dynamic", "c++", "c++abi", "unwind-dynamic"]
-        else:
-            env["LIBS"] += ["dl-dynamic", "stlport-dynamic", "m-dynamic", "c-dynamic", "unwind-dynamic"]
-        env["CRTBEGIN"] = [joinpath(pinCrtLibDir, "crtbegin.o")]
-        env["CRTEND"] = [joinpath(pinCrtLibDir, "crtend.o")]
-        env["CRTBEGINS"] = [joinpath(pinCrtLibDir, "crtbeginS.o")]
-        env["CRTENDS"] = [joinpath(pinCrtLibDir, "crtendS.o")]
-        env["LINKCOM"] = "$LINK -o $TARGET $LINKFLAGS $CRTBEGIN $SOURCES $_LIBDIRFLAGS $_LIBFLAGS $CRTEND"
-        env["SHLINKCOM"] = "$SHLINK -o $TARGET $SHLINKFLAGS $CRTBEGINS $SOURCES $_LIBDIRFLAGS $_LIBFLAGS $CRTENDS"
-
     # Harness needs these defined
-    env["CPPFLAGS"] += ' -DPIN_PATH="' + joinpath(PINPATH, "intel64/bin/pinbin") + '" '
     env["CPPFLAGS"] += ' -DZSIM_PATH="' + joinpath(ROOT, joinpath(buildDir, "libzsim.so")) + '" '
-    env["CPPFLAGS"] += ' -DLDLIB_PATH="' + ":".join(env["LIBPATH"] + env["PINLIBPATH"]) + '" '
-    if withPinCrt:
-        env["CPPFLAGS"] += ' -DPIN_CRT_TZDATA="' + joinpath(PINPATH, "extras/crt/tzdata") + '" '
-        # PinCRT header <functional> misses NULL declaration
-        env["CPPFLAGS"] += ' -DNULL=0 '
-
-    # Do PGO?
-    if pgo == "generate":
-        genFlags = " -prof-gen " if useIcc else " -fprofile-generate "
-        env["PINCPPFLAGS"] += genFlags
-        env["PINLINKFLAGS"] += genFlags
-    elif pgo == "use":
-        if useIcc: useFlags = " -prof-use "
-        else: useFlags = " -fprofile-use -fprofile-correction "
-        # even single-threaded sims use internal threads, so we need correction
-        env["PINCPPFLAGS"] += useFlags
-        env["PINLINKFLAGS"] += useFlags
 
     env.SConscript("src/SConscript", variant_dir=buildDir, exports= {'env' : env.Clone()})
 

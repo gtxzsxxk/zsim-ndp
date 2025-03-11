@@ -16,10 +16,6 @@ excludeSrcs = [
 excludeSrcs += harnessSrcs
 
 libEnv = env.Clone()
-libEnv["CPPFLAGS"] += libEnv["PINCPPFLAGS"]
-libEnv["LINKFLAGS"] += libEnv["PINLINKFLAGS"]
-libEnv["LIBPATH"] += libEnv["PINLIBPATH"]
-libEnv["LIBS"] += libEnv["PINLIBS"]
 
 # Build syscall name file
 def getSyscalls(): return os.popen("python ../../misc/list_syscalls.py").read().strip()
