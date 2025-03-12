@@ -910,6 +910,96 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                 }
             }
             break;
+        case RISCV_OPCODE_C0:
+        case RISCV_OPCODE_C1:
+        case RISCV_OPCODE_C2:
+            /* TODO: fix this decode logic */
+            // For now, we'll emit a generic operation to approximate
+            emitBasicOp(instr, uops, 1, PORTS_015);
+            break;
+        case RISCV_OPCODE_VECTOR_LOAD:  // Vector loads
+        case RISCV_OPCODE_VECTOR_STORE:
+            {
+                // uint32_t width = INS_VectorWidth(ins);
+                // uint32_t elements = INS_VectorElements(ins);
+                uint32_t width = 32, elements = 16;
+                
+                // Approximate vector loads based on their width and element count
+                // More elements means more micro-ops
+                uint32_t numUops = (width * elements + 63) / 64;  // Rough approximation
+                for (uint32_t i = 0; i < numUops; i++) {
+                    if (opcode == RISCV_OPCODE_VECTOR_LOAD) {
+                        emitLoad(instr, i, uops, REG_LOAD_TEMP + i);
+                    } else {
+                        emitStore(instr, i, uops, REG_LOAD_TEMP + i);
+                    }
+                }
+            }
+            break;
+        case RISCV_OPCODE_VECTOR_ARITH:  // Vector arithmetic operations
+            {
+                // uint32_t vectorOp = INS_VectorOp(ins);
+                // uint32_t width = INS_VectorWidth(ins);
+                // uint32_t elements = INS_VectorElements(ins);
+                uint32_t width = 32, elements = 16;
+                
+                // Approximate vector operations based on width and element count
+                uint32_t baseLatency = 1;
+                uint8_t port = PORTS_015;
+                
+                /* TODO: check this */
+                // Adjust latency based on operation type
+                // switch (vectorOp) {
+                //     case RV_VOP_ADD:
+                //     case RV_VOP_SUB:
+                //     case RV_VOP_AND:
+                //     case RV_VOP_OR:
+                //     case RV_VOP_XOR:
+                //         baseLatency = 1;
+                //         break;
+                //     case RV_VOP_MUL:
+                //         baseLatency = 4;
+                //         port = PORT_0;
+                //         break;
+                //     case RV_VOP_DIV:
+                //         baseLatency = 20;
+                //         port = PORT_0;
+                //         break;
+                //     case RV_VOP_FP_ADD:
+                //     case RV_VOP_FP_SUB:
+                //         baseLatency = 3;
+                //         port = PORT_1;
+                //         break;
+                //     case RV_VOP_FP_MUL:
+                //         baseLatency = 4;
+                //         port = PORT_0;
+                //         break;
+                //     case RV_VOP_FP_DIV:
+                //         baseLatency = 10;
+                //         port = PORT_0;
+                //         break;
+                //     default:
+                //         baseLatency = 1;
+                // }
+
+                baseLatency = 8;
+                port = PORT_0;
+                
+                // Emit vector operations based on vector length
+                uint32_t numUops = (width * elements + 63) / 64;  // Rough approximation
+                numUops = numUops == 0 ? 1 : numUops;  // At least one uop
+                
+                for (uint32_t i = 0; i < numUops; i++) {
+                    emitExecUop(REG_EXEC_TEMP + i, REG_EXEC_TEMP + numUops + i, 
+                               REG_EXEC_TEMP + 2*numUops + i, 0, uops, baseLatency, port);
+                }
+            }
+            break;
+            
+        default:
+            inaccurate = true;
+            // Try to produce something approximate
+            emitBasicOp(instr, uops, 1, PORTS_015);
     }
 
 
