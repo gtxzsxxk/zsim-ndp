@@ -112,11 +112,9 @@ typedef uint32_t INS;
 #define RISCV_OPCODE_JAL                    0x6f
 #define RISCV_OPCODE_JALR                   0x67
 #define RISCV_OPCODE_LUI                    0x37
-#define RISCV_OPCODE_AUIPC                  0x67
+#define RISCV_OPCODE_AUIPC                  0x17
 #define RISCV_OPCODE_SYSTEM                 0x73
 #define RISCV_OPCODE_FENCE                  0x0f
-#define RISCV_OPCODE_LOAD_FP                0x07
-#define RISCV_OPCODE_STORE_FP               0x27
 #define RISCV_OPCODE_MADD_FP                0x43
 #define RISCV_OPCODE_MSUB_FP                0x47
 #define RISCV_OPCODE_NMSUB_FP               0x4b
