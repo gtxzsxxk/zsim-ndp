@@ -450,40 +450,42 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
             switch (funct3) {
                 case 0x2: // Word operations
                 case 0x3: // Double word operations
-                    uint8_t amo_type = funct7 >> 2;
-                    switch (amo_type) {
-                        case 0x0: // AMOADD
-                        case 0x4: // AMOXOR
-                        case 0x8: // AMOOR
-                        case 0xC: // AMOAND
-                        case 0x10: // AMOMIN
-                        case 0x14: // AMOMAX
-                        case 0x18: // AMOMINU
-                        case 0x1C: // AMOMAXU
-                            {
+                    {
+                        uint8_t amo_type = funct7 >> 2;
+                        switch (amo_type) {
+                            case 0x0: // AMOADD
+                            case 0x4: // AMOXOR
+                            case 0x8: // AMOOR
+                            case 0xC: // AMOAND
+                            case 0x10: // AMOMIN
+                            case 0x14: // AMOMAX
+                            case 0x18: // AMOMINU
+                            case 0x1C: // AMOMAXU
+                                {
+                                    emitLoad(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
+                                    emitExecUop(riscvInsArithRd(ins), riscvInsArithRs2(ins),
+                                        riscvInsArithRd(ins), 0, uops, 3, PORTS_015);
+                                    emitStore(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
+                                }
+                                break;
+                            case 0x1: // AMOSWAP
+                                /* TODO: check with uops */
+                                emitXchg(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins), riscvInsArithRs2(ins));
+                                break;
+                            case 0x2: // LR (Load Reserved)
+                                /* TODO: check with the register */
                                 emitLoad(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
-                                emitExecUop(riscvInsArithRd(ins), riscvInsArithRs2(ins),
-                                    riscvInsArithRd(ins), 0, uops, 3, PORTS_015);
-                                emitStore(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
-                            }
-                            break;
-                        case 0x1: // AMOSWAP
-                            /* TODO: check with uops */
-                            emitXchg(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins), riscvInsArithRs2(ins));
-                            break;
-                        case 0x2: // LR (Load Reserved)
-                            /* TODO: check with the register */
-                            emitLoad(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
-                            break;
-                        case 0x3: // SC (Store Conditional)
-                            emitStore(uops, riscvInsArithRs2(ins), riscvInsArithRs1(ins));
-                            emitExecUop(0, 0,
-                                    riscvInsArithRd(ins), 0, uops, 3, PORTS_015);
-                            break;
-                        default:
-                            inaccurate = true;
+                                break;
+                            case 0x3: // SC (Store Conditional)
+                                emitStore(uops, riscvInsArithRs2(ins), riscvInsArithRs1(ins));
+                                emitExecUop(0, 0,
+                                        riscvInsArithRd(ins), 0, uops, 3, PORTS_015);
+                                break;
+                            default:
+                                inaccurate = true;
+                        }
+                        break;
                     }
-                    break;
                 default:
                     inaccurate = true;
             }
