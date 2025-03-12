@@ -150,9 +150,8 @@ class Decoder {
             explicit Instr(INS _ins);
 
             private:
-                static uint8_t riscvOpCode(INS &ins);
                 //Put registers in some canonical order -- non-flags first
-                void reorderRegs(uint32_t* regArray, uint32_t numRegs);
+                // void reorderRegs(uint32_t* regArray, uint32_t numRegs);
         };
 
     public:
@@ -169,18 +168,17 @@ class Decoder {
         static uint8_t riscvInsFunct3(INS ins);
         static uint8_t riscvInsFunct7(INS ins);
         static uint8_t riscvInsIsAtomic(INS ins);
+        static uint8_t riscvInsArithRd(INS ins);
+        static uint8_t riscvInsArithRs1(INS ins);
+        static uint8_t riscvInsArithRs2(INS ins);
         //Return true if inaccurate decoding, false if accurate
         static bool decodeInstr(INS ins, DynUopVec& uops);
 
         /* Every emit function can produce 0 or more uops; it returns the number of uops. These are basic templates to make our life easier */
 
         //By default, these emit to temporary registers that depend on the index; this can be overriden, e.g. for moves
-        static void emitLoad(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t destReg = 0);
-        static void emitStore(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t srcReg = 0);
-
-        //Emit all loads and stores for this uop
-        static void emitLoads(Instr& instr, DynUopVec& uops);
-        static void emitStores(Instr& instr, DynUopVec& uops);
+        static void emitLoad(DynUopVec& uops, uint16_t destReg, uint16_t baseReg);
+        static void emitStore(DynUopVec& uops, uint16_t dataReg, uint16_t addrReg);
 
         //Emits a load-store fence uop
         static void emitFence(DynUopVec& uops, uint32_t lat);
@@ -190,33 +188,15 @@ class Decoder {
 
         /* Instruction emits */
 
-        static void emitBasicMove(Instr& instr, DynUopVec& uops, uint32_t lat, uint8_t ports);
-        static void emitConditionalMove(Instr& instr, DynUopVec& uops, uint32_t lat, uint8_t ports);
-
-        // 1 "exec" uop, 0-2 inputs, 0-2 outputs
-        static void emitBasicOp(Instr& instr, DynUopVec& uops, uint32_t lat, uint8_t ports,
-                uint8_t extraSlots = 0, bool reportUnhandled = true);
-
-        // >1 exec uops in a chain: each uop takes 2 inputs, produces 1 output to the next op
-        // in the chain; the final op writes to the 0-2 outputs
-        static void emitChainedOp(Instr& instr, DynUopVec& uops, uint32_t numUops,
-                uint32_t* latArray, uint8_t* portsArray);
-
-        // Some convert ops need 2 chained exec uops, though they have a single input and output
-        static void emitConvert2Op(Instr& instr, DynUopVec& uops, uint32_t lat1, uint32_t lat2,
-                uint8_t ports1, uint8_t ports2);
+        static void emitBasicMove(DynUopVec& uops, uint16_t rd, uint32_t lat, uint8_t ports);
 
         /* Specific cases */
-        static void emitXchg(Instr& instr, DynUopVec& uops);
-        static void emitMul(Instr& instr, DynUopVec& uops);
-        static void emitDiv(Instr& instr, DynUopVec& uops);
-
-        static void emitCompareAndExchange(Instr&, DynUopVec&);
+        static void emitXchg(DynUopVec& uops, uint16_t rd, uint16_t rs1, uint16_t rs2);
+        static void emitMul(DynUopVec& uops, uint16_t rd, uint16_t rs1, uint16_t rs2);
+        static void emitDiv(DynUopVec& uops, uint8_t width, uint16_t rd, uint16_t rs1, uint16_t rs2);
 
         /* Other helper functions */
         static void reportUnhandledCase(Instr& instr, const char* desc);
-        static void populateRegArrays(Instr& instr, uint32_t* srcRegs, uint32_t* dstRegs);
-        static void dropStackRegister(Instr& instr);
 
         /* Macro-op (ins) fusion */
         static bool canFuse(INS ins);
