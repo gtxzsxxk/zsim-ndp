@@ -421,11 +421,9 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
             }
             break;
         case RISCV_OPCODE_LOAD:
-        case RISCV_OPCODE_LOAD_FP:
             emitLoad(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
             break;
         case RISCV_OPCODE_STORE:
-        case RISCV_OPCODE_STORE_FP:
             emitStore(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
             break;
         case RISCV_OPCODE_BRANCH:
@@ -720,22 +718,20 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                 }
             }
             break;
+        /* Use OOO's intrinsic register renaming to simulate vector instructions */
         case RISCV_OPCODE_VECTOR_LOAD:  // Vector loads
         case RISCV_OPCODE_VECTOR_STORE:
             {
-                // uint32_t width = INS_VectorWidth(ins);
-                // uint32_t elements = INS_VectorElements(ins);
-                uint32_t width = 32, elements = 16;
-                
-                // Approximate vector loads based on their width and element count
-                // More elements means more micro-ops
-                uint32_t numUops = (width * elements + 63) / 64;  // Rough approximation
-                for (uint32_t i = 0; i < numUops; i++) {
+                if (funct3 != 0) {
                     if (opcode == RISCV_OPCODE_VECTOR_LOAD) {
-                        emitLoad(instr, i, uops, REG_LOAD_TEMP + i);
+                        emitLoad(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
                     } else {
-                        emitStore(instr, i, uops, REG_LOAD_TEMP + i);
+                        emitStore(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins));
                     }
+                } else {
+                    /* Loads and stores of these instructions will be provided
+                     * by the frontend
+                     */
                 }
             }
             break;
@@ -793,8 +789,7 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                 numUops = numUops == 0 ? 1 : numUops;  // At least one uop
                 
                 for (uint32_t i = 0; i < numUops; i++) {
-                    emitExecUop(REG_EXEC_TEMP + i, REG_EXEC_TEMP + numUops + i, 
-                               REG_EXEC_TEMP + 2*numUops + i, 0, uops, baseLatency, port);
+                    emitExecUop(0, 0, 0, 0, uops, baseLatency, port);
                 }
             }
             break;
@@ -802,7 +797,7 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
         default:
             inaccurate = true;
             // Try to produce something approximate
-            emitBasicOp(instr, uops, 1, PORTS_015);
+            emitExecUop(0, 0, 0, 0, uops, 1, PORTS_015);
     }
 
     //NOTE: REP instructions are unrolled by PIN, so they are accurately simulated (they are treated as predicated in Pin)
