@@ -171,6 +171,7 @@ class Decoder {
         static uint8_t riscvInsArithRd(INS ins);
         static uint8_t riscvInsArithRs1(INS ins);
         static uint8_t riscvInsArithRs2(INS ins);
+        static uint8_t riscvCompressedRegDecode(uint8_t reg);
         //Return true if inaccurate decoding, false if accurate
         static bool decodeInstr(INS ins, DynUopVec& uops);
 

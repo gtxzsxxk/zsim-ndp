@@ -194,7 +194,7 @@ uint8_t Decoder::riscvInsOpCode(INS ins) {
 }
 
 uint8_t Decoder::riscvInsFunct3(INS ins) {
-    return (ins >> 12) & 0x03;
+    return (ins >> 12) & 0x07;
 }
 
 uint8_t Decoder::riscvInsFunct7(INS ins) {
@@ -215,6 +215,11 @@ uint8_t Decoder::riscvInsArithRs1(INS ins) {
 
 uint8_t Decoder::riscvInsArithRs2(INS ins) {
     return (ins >> 20) & 0x1f;
+}
+
+uint8_t Decoder::riscvCompressedRegDecode(uint8_t reg) {
+    assert(reg <= 7);
+    return reg + 8;
 }
 
 bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
@@ -425,12 +430,13 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
             break;
         case RISCV_OPCODE_BRANCH:
         case RISCV_OPCODE_JAL:
-            emitExecUop(riscvInsArithRs1(ins), 0,
+            emitExecUop(0, 0,
                 riscvInsArithRd(ins), 0, uops, 1, PORT_5);
+            break;
         case RISCV_OPCODE_JALR:
             // All branches have the same uop profile in this model
-            emitExecUop(0, 0,
-                        riscvInsArithRd(ins), 0, uops, 1, PORT_5);
+            emitExecUop(riscvInsArithRs1(ins), 0,
+                riscvInsArithRd(ins), 0, uops, 1, PORT_5);
             break;
         case RISCV_OPCODE_LUI:
             emitExecUop(0, 0,
@@ -463,7 +469,7 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                             break;
                         case 0x1: // AMOSWAP
                             /* TODO: check with uops */
-                            emitXchg(instr, uops);
+                            emitXchg(uops, riscvInsArithRd(ins), riscvInsArithRs1(ins), riscvInsArithRs2(ins));
                             break;
                         case 0x2: // LR (Load Reserved)
                             /* TODO: check with the register */
@@ -485,7 +491,7 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
         case RISCV_OPCODE_SYSTEM:
             switch (funct3) {
                 case 0x0: // ECALL, EBREAK, MRET, SRET, URET, WFI
-                    emitBasicOp(instr, uops, 1, PORTS_015);
+                    emitExecUop(0, 0, 0, 0, uops, 1, PORTS_015);
                     break;
                 case 0x1: // CSRRW
                 case 0x2: // CSRRS
@@ -493,12 +499,8 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                 case 0x5: // CSRRWI
                 case 0x6: // CSRRSI
                 case 0x7: // CSRRCI
-                    // CSR operations are more complex, model as 2 chained operations
-                    {
-                        uint32_t lats[] = {2, 2};
-                        uint8_t ports[] = {PORTS_015, PORTS_015};
-                        emitChainedOp(instr, uops, 2, lats, ports);
-                    }
+                    // CSR operations are more complex
+                    emitExecUop(0, 0, 0, 0, uops, 5, PORTS_015);
                     break;
                 case 9: // SFENCE.VMA
                     /* TODO: check the latency value */
@@ -525,11 +527,14 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
         case RISCV_OPCODE_NMSUB_FP: // FNMSUB.S, FNMSUB.D
         case RISCV_OPCODE_NMADD_FP: // FNMADD.S, FNMADD.D
             {
+                /* TODO: check fp register */
                 uint8_t fmt = (ins >> 25) & 0x3;
                 if (fmt == 0x0) { // Single precision
-                    emitBasicOp(instr, uops, 4, PORT_0);
+                    emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                        riscvInsArithRd(ins), 0, uops, 4, PORT_0);
                 } else if (fmt == 0x1) { // Double precision
-                    emitBasicOp(instr, uops, 5, PORT_0);
+                    emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                        riscvInsArithRd(ins), 0, uops, 5, PORT_0);
                 } else {
                     inaccurate = true;
                 }
@@ -542,80 +547,176 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
                 
                 switch (fp_opcode) {
                     case 0x0: // FADD.S/FADD.D
-                        if (fmt == 0x0) { // FADD.S
-                            emitBasicOp(instr, uops, 3, PORT_1);
-                        } else if (fmt == 0x1) { // FADD.D
-                            emitBasicOp(instr, uops, 3, PORT_1);
-                        }
-                        break;
                     case 0x1: // FSUB.S/FSUB.D
-                        if (fmt == 0x0) { // FSUB.S
-                            emitBasicOp(instr, uops, 3, PORT_1);
-                        } else if (fmt == 0x1) { // FSUB.D
-                            emitBasicOp(instr, uops, 3, PORT_1);
-                        }
+                        emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                            riscvInsArithRd(ins), 0, uops, 3, PORT_1);
                         break;
                     case 0x2: // FMUL.S/FMUL.D
                         if (fmt == 0x0) { // FMUL.S
-                            emitBasicOp(instr, uops, 4, PORT_0);
+                            emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                                riscvInsArithRd(ins), 0, uops, 4, PORT_1);
                         } else if (fmt == 0x1) { // FMUL.D
-                            emitBasicOp(instr, uops, 5, PORT_0);
+                            emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                                riscvInsArithRd(ins), 0, uops, 5, PORT_1);
                         }
                         break;
                     case 0x3: // FDIV.S/FDIV.D
-                        if (fmt == 0x0) { // FDIV.S
-                            /* TODO: check this */
-                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
-                        } else if (fmt == 0x1) { // FDIV.D
-                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
-                        }
+                        emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                            riscvInsArithRd(ins), 0, uops, 7, PORT_0, 6);
                         break;
                     case 0x4: // FSGNJ.S/FSGNJ.D, FSGNJN.S/FSGNJN.D, FSGNJX.S/FSGNJX.D
-                        emitBasicOp(instr, uops, 1, PORT_0 | PORT_5);
+                        emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                            riscvInsArithRd(ins), 0, uops, 1, PORT_0 | PORT_5);
                         break;
                     case 0x5: // FMIN.S/FMIN.D, FMAX.S/FMAX.D
-                        emitBasicOp(instr, uops, 3, PORT_1);
+                        emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                            riscvInsArithRd(ins), 0, uops, 3, PORT_1);
                         break;
                     case 0x6: // FCVT.W.S/FCVT.W.D, FCVT.WU.S/FCVT.WU.D
-                        emitBasicOp(instr, uops, 3+2 /*domain change*/, PORT_1);
+                        emitExecUop(riscvInsArithRs1(ins), 0,
+                            riscvInsArithRd(ins), 0, uops, 3 + 2, PORT_1);
                         break;
                     case 0x7: // FMV.X.W/FMV.X.D, FCLASS.S/FCLASS.D
-                        emitBasicOp(instr, uops, 1+2 /*domain change*/, PORT_0);
+                        emitExecUop(riscvInsArithRs1(ins), 0,
+                        riscvInsArithRd(ins), 0, uops, 1 + 2, PORT_1);
                         break;
                     case 0x8: // FCMP.S/FCMP.D (FEQ, FLT, FLE)
-                        emitBasicOp(instr, uops, 3, PORT_1);
+                        emitExecUop(riscvInsArithRs1(ins), riscvInsArithRs2(ins),
+                            riscvInsArithRd(ins), 0, uops, 3, PORT_1);
                         break;
                     case 0x9: // FCVT.S.W/FCVT.S.D, FCVT.S.WU/FCVT.D.WU
-                        emitBasicOp(instr, uops, 3+2 /*domain change*/, PORT_1);
+                        emitExecUop(riscvInsArithRs1(ins), 0,
+                            riscvInsArithRd(ins), 0, uops, 3 + 2, PORT_1);
                         break;
                     case 0xA: // FMV.W.X/FMV.D.X
-                        emitBasicOp(instr, uops, 1+2 /*domain change*/, PORT_0);
-                        break;
                     case 0xB: // FCVT.D.S/FCVT.S.D
-                        if (fmt == 0x0) { // FCVT.D.S
-                            emitBasicOp(instr, uops, 1, PORT_0);
-                        } else if (fmt == 0x1) { // FCVT.S.D
-                            emitConvert2Op(instr, uops, 2, 2, PORT_1, PORT_5);
-                        }
+                        emitExecUop(riscvInsArithRs1(ins), 0,
+                            riscvInsArithRd(ins), 0, uops, 1 + 2, PORT_0);
                         break;
                     case 0xC: // FSQRT.S/FSQRT.D
-                        if (fmt == 0x0) { // FSQRT.S
-                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
-                        } else if (fmt == 0x1) { // FSQRT.D
-                            emitBasicOp(instr, uops, 7, PORT_0, 6); // Non-pipelined
-                        }
+                        emitExecUop(riscvInsArithRs1(ins), 0,
+                            riscvInsArithRd(ins), 0, uops, 7, PORT_0);
                         break;
                     default:
                         inaccurate = true;
                 }
             }
             break;
+        /* To some floating compress instructions:
+         * We will simply simulated it as a general purposed register
+         * since the value does not matter
+         */
         case RISCV_OPCODE_C0:
+            {
+                uint8_t func = (ins >> 13) & 0x07;
+                uint8_t rd = riscvCompressedRegDecode((ins >> 2) & 0x7);
+                uint8_t rs = riscvCompressedRegDecode((ins >> 7) & 0x7);
+                switch(func) {
+                    case 0:
+                        emitExecUop(0, 0, rd, 0, uops, 1, PORTS_015);
+                        break;
+                    case 1:
+                    case 2:
+                    case 3:
+                        emitLoad(uops, rd, rs);
+                        break;
+                    case 5:
+                    case 6:
+                    case 7:
+                        emitStore(uops, rs, rd);
+                        break;
+                    default:
+                        inaccurate = true;
+                }
+            }
+            break;
         case RISCV_OPCODE_C1:
+            {
+                uint8_t func = (ins >> 13) & 0x07;
+                switch (func) {
+                    case 0: // C.ADDI
+                    case 1: // C.ADDIW
+                        {
+                            uint8_t rsrd = (ins >> 7) & 0x1f;
+                            emitExecUop(rsrd, 0, rsrd, 0, uops, 1, PORTS_015);
+                        }
+                        break;
+                    case 2: // C.Li
+                    case 3: // C.ADDI16SP C.LUI
+                        {
+                            uint8_t rsrd = (ins >> 7) & 0x1f;
+                            emitExecUop(0, 0, rsrd, 0, uops, 1, PORTS_015);
+                        }
+                        break;
+                    case 4: // Shift and Arith
+                        {
+                            uint8_t rsrd = riscvCompressedRegDecode((ins >> 7) & 0x07);
+                            uint8_t subFunc = (ins >> 10) & 0x03;
+                            if (subFunc != 3) {
+                                emitExecUop(rsrd, 0, rsrd, 0, uops, 1, PORT_0 | PORT_5);
+                            } else {
+                                uint8_t rs2 = riscvCompressedRegDecode((ins >> 2) & 0x07);
+                                emitExecUop(rsrd, rs2, rsrd, 0, uops, 1, PORTS_015);
+                            }
+                        }
+                        break;
+                    case 5: // C.J
+                        emitExecUop(0, 0, 1, 0, uops, 1, PORT_5);
+                        break;
+                    case 6: // C.BEQZ
+                    case 7: // C.BNEZ
+                        {
+                            uint8_t rs = riscvCompressedRegDecode((ins >> 7) & 0x07);
+                            emitExecUop(rs, 0, 0, 0, uops, 1, PORT_5);
+                        }
+                        break;
+                }
+            }
+            break;
         case RISCV_OPCODE_C2:
-            /* TODO: fix this decode logic */
-            // For now, we'll emit a generic operation to approximate
-            emitBasicOp(instr, uops, 1, PORTS_015);
+            {
+                uint8_t func = (ins >> 13) & 0x07;
+                uint8_t rsrd = (ins >> 7) & 0x1f;
+                uint8_t rs2 = (ins >> 2) & 0x1f;
+                switch (func) {
+                    case 0: // C.SLLI64
+                        emitExecUop(rsrd, 0, rsrd, 0, uops, 1, PORT_0 | PORT_5);
+                        break;
+                    case 1: // C.FLDSP
+                    case 2: // C.LWSP
+                    case 3: // C.LDSP
+                        emitLoad(uops, rsrd, 2);
+                        break;
+                    case 4: // C.JR C.MV C.EBREAK C.JALR C.ADD
+                        {
+                            uint8_t funct1 = (ins >> 12) & 0x01;
+                            if (funct1 == 0) {
+                                if (rs2 == 0) {
+                                    emitExecUop(0, 0, rsrd, 0, uops, 1, PORT_5);
+                                } else {
+                                    emitExecUop(rs2, 0, rsrd, 0, uops, 1, PORT_5);
+                                }
+                            } else {
+                                if (rsrd == 0 && rs2 == 0) {
+                                    /* EBREAK */
+                                    emitExecUop(0, 0, 0, 0, uops, 1, PORTS_015);
+                                } else if (rsrd != 0 && rs2 == 0) {
+                                    /* C.JALR */
+                                    emitExecUop(rsrd, 0, 1, 0, uops, 1, PORT_5);
+                                } else {
+                                    /* C.ADD */
+                                    emitExecUop(rsrd, rs2, rsrd, 0, uops, 1, PORTS_015);
+                                }
+                            }
+                        }
+                        break;
+                    case 5: // C.FSDSP
+                    case 6: // C.SWSP
+                    case 7: // C.SDSP
+                        emitStore(uops, 2, rs2);
+                        break;
+                }
+            }
             break;
         case RISCV_OPCODE_VECTOR_LOAD:  // Vector loads
         case RISCV_OPCODE_VECTOR_STORE:
