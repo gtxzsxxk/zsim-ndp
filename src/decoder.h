@@ -26,6 +26,7 @@
 #ifndef DECODER_H_
 #define DECODER_H_
 
+#include "core.h"
 #include <cstdint>
 #include <cstddef>
 #include <vector>
@@ -98,7 +99,6 @@ struct BblInfo;  // defined in core.h
 #define MAX_REGISTERS (REG_EXEC_TEMP + 64)
 
 typedef std::vector<DynUop> DynUopVec;
-typedef uint32_t INS;
 
 /* RISC-V definitions */
 #define RISCV_OPCODE_ATOMIC                 0x2f
@@ -154,7 +154,7 @@ class Decoder {
 
     public:
         //If oooDecoding is true, produces a DynBbl with DynUops that can be used in OOO cores
-        static BblInfo* decodeBbl(BBL bbl, bool oooDecoding);
+        static BblInfo* decodeBbl(struct BasicBlock bbl, bool oooDecoding);
 
 #ifdef BBL_PROFILING
         static void profileBbl(uint64_t bblIdx);
@@ -199,7 +199,6 @@ class Decoder {
 
         /* Macro-op (ins) fusion */
         static bool canFuse(INS ins);
-        static bool decodeFusedInstrs(INS ins, DynUopVec& uops);
 };
 
 typedef uint64_t THREADID;

@@ -35,11 +35,6 @@
 #include "locks.h"
 #include "log.h"
 
-
-//XED expansion macros (enable us to type opcodes at a reasonable speed)
-#define XC(cat) (XED_CATEGORY_##cat)
-#define XO(opcode) (XED_ICLASS_##opcode)
-
 //PORT defines. You might want to change these to affect scheduling
 #define PORT_0 (0x1)
 #define PORT_1 (0x2)
@@ -816,176 +811,71 @@ bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
 
 // See Agner Fog's uarch doc, macro-op fusion for Core 2 / Nehalem
 bool Decoder::canFuse(INS ins) {
-    xed_iclass_enum_t opcode = (xed_iclass_enum_t) INS_Opcode(ins);
-    if (!(opcode == XO(CMP) || opcode == XO(TEST))) return false;
-    //Discard if immediate
-    for (uint32_t op = 0; op < INS_OperandCount(ins); op++) if (INS_OperandIsImmediate(ins, op)) return false;
-
-    //OK so far, let's check the branch
-    INS nextIns = INS_Next(ins);
-    if (!INS_Valid(nextIns)) return false;
-    xed_iclass_enum_t nextOpcode = (xed_iclass_enum_t) INS_Opcode(nextIns);
-    xed_category_enum_t nextCategory = (xed_category_enum_t) INS_Category(nextIns);
-    if (nextCategory != XC(COND_BR)) return false;
-    if (!INS_IsDirectBranch(nextIns)) return false; //according to PIN's API, this s only true for PC-rel near branches
-
-    switch (nextOpcode) {
-        case XO(JZ):  //or JZ
-        case XO(JNZ): //or JNE
-        case XO(JB):
-        case XO(JBE):
-        case XO(JNBE): //or JA
-        case XO(JNB):  //or JAE
-        case XO(JL):
-        case XO(JLE):
-        case XO(JNLE): //or JG
-        case XO(JNL):  //or JGE
+    uint8_t opcode = riscvInsOpCode(ins);
+    switch (opcode) {
+        case RISCV_OPCODE_BRANCH:
+        case RISCV_OPCODE_JAL:
             return true;
-        case XO(JO):
-        case XO(JNO):
-        case XO(JP):
-        case XO(JNP):
-        case XO(JS):
-        case XO(JNS):
-            return opcode == XO(TEST); //CMP cannot fuse with these
+        case RISCV_OPCODE_JALR:
         default:
-            return false; //other instrs like LOOP don't fuse
+            return false;
     }
 }
 
-bool Decoder::decodeFusedInstrs(INS ins, DynUopVec& uops) {
-    //assert(canFuse(ins)); //this better be true :)
-
-    Instr instr(ins);
-    Instr branch(INS_Next(ins));
-
-    //instr should have 2 inputs (regs/mem), and 1 output (rflags), and branch should have 2 inputs (rip, rflags) and 1 output (rip)
-
-    if (instr.numOutRegs != 1  || instr.outRegs[0] != REG_RFLAGS ||
-        branch.numOutRegs != 1 || branch.outRegs[0] != REG_RIP)
-    {
-        reportUnhandledCase(instr, "decodeFusedInstrs");
-        reportUnhandledCase(branch, "decodeFusedInstrs");
-    } else {
-        instr.outRegs[1] = REG_RIP;
-        instr.numOutRegs++;
-    }
-
-    emitBasicOp(instr, uops, 1, PORT_5);
-    return false; //accurate
-}
-
-
-#ifdef BBL_PROFILING
-
-//All is static for now...
-#define MAX_BBLS (1<<24) //16M
-
-static lock_t bblIdxLock = 0;
-static uint64_t bblIdx = 0;
-
-static uint64_t bblCount[MAX_BBLS];
-static std::vector<uint32_t>* bblApproxOpcodes[MAX_BBLS];
-
-#endif
-
-BblInfo* Decoder::decodeBbl(BBL bbl, bool oooDecoding) {
-    uint32_t instrs = BBL_NumIns(bbl);
-    uint32_t bytes = BBL_Size(bbl);
+BblInfo* Decoder::decodeBbl(struct BasicBlock bbl, bool oooDecoding) {
+    auto bytes = bbl.codeBytes;
     BblInfo* bblInfo;
+
+    bbl.resetProgramIndex();
+    //Gather some info about instructions needed to model decode stalls
+    std::vector<ADDRINT> instrAddr;
+    std::vector<uint32_t> instrBytes;
+    std::vector<uint32_t> instrUops;
+    std::vector<INS> instrDesc;
 
     if (oooDecoding) {
         //Decode BBL
         uint32_t approxInstrs = 0;
-        uint32_t curIns = 0;
         DynUopVec uopVec;
 
-#ifdef BBL_PROFILING
-        std::vector<uint32_t> approxOpcodes;
-
-        //XED decoder init
-        xed_state_t dstate;
-        xed_decoded_inst_t xedd;
-        xed_state_zero(&dstate);
-        xed_state_init(&dstate, XED_MACHINE_MODE_LONG_64, XED_ADDRESS_WIDTH_64b, XED_ADDRESS_WIDTH_64b);
-        xed_decoded_inst_zero_set_mode(&xedd, &dstate);
-#endif
-
-        //Gather some info about instructions needed to model decode stalls
-        std::vector<ADDRINT> instrAddr;
-        std::vector<uint32_t> instrBytes;
-        std::vector<uint32_t> instrUops;
-        std::vector<INS> instrDesc;
-
         //Decode
-        for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
+        size_t instIndex = 0;
+        uint8_t instLength = 0;
+        for (INS ins = bbl.getHeadInstruction(&instIndex, &instLength); bbl.endOfBlock();
+                ins = bbl.getHeadInstruction(&instIndex, &instLength)) {
             bool inaccurate = false;
             uint32_t prevUops = uopVec.size();
-            if (Decoder::canFuse(ins)) {
-                inaccurate = Decoder::decodeFusedInstrs(ins, uopVec);
-                instrAddr.push_back(INS_Address(ins));
-                instrBytes.push_back(INS_Size(ins));
-                instrUops.push_back(uopVec.size() - prevUops);
-                instrDesc.push_back(ins);
+            inaccurate = Decoder::decodeInstr(ins, uopVec);
 
-                ins = INS_Next(ins); //skip the JMP
+            instrAddr.push_back(bbl.startAddress + instIndex);
+            instrBytes.push_back(instLength);
+            instrUops.push_back(uopVec.size() - prevUops);
+            instrDesc.push_back(ins);
 
-                instrAddr.push_back(INS_Address(ins));
-                instrBytes.push_back(INS_Size(ins));
-                instrUops.push_back(0);
-                instrDesc.push_back(ins);
-
-                curIns+=2;
-            } else {
-                inaccurate = Decoder::decodeInstr(ins, uopVec);
-
-                instrAddr.push_back(INS_Address(ins));
-                instrBytes.push_back(INS_Size(ins));
-                instrUops.push_back(uopVec.size() - prevUops);
-                instrDesc.push_back(ins);
-
-                curIns++;
-            }
-#ifdef PROFILE_ALL_INSTRS
-            inaccurate = true; //uncomment to profile everything
-#endif
             if (inaccurate) {
                 approxInstrs++;
-#ifdef BBL_PROFILING
-                xed_decoded_inst_zero_keep_mode(&xedd); //need to do this per instruction
-                xed_iform_enum_t iform = XED_IFORM_INVALID;
-                uint8_t buf[16];
-                //Using safecopy, we bypass pagefault uglyness due to out-of-bounds accesses
-                size_t insBytes = PIN_SafeCopy(buf, INS_Address(ins), 15);
-                xed_error_enum_t err = xed_decode(&xedd, buf, insBytes);
-                if (err != XED_ERROR_NONE) {
-                    panic("xed_decode failed: %s", xed_error_enum_t2str(err));
-                } else {
-                    iform = xed_decoded_inst_get_iform_enum(&xedd);
-                }
-                approxOpcodes.push_back((uint32_t)iform);
-#endif
-                //info("Approx decoding: %s", INS_Disassemble(ins).c_str());
+            }
+            if (Decoder::canFuse(ins)) {
+                break;
             }
         }
-        assert(curIns == instrs);
 
         //Instr predecoder and decode stage modeling; we assume clean slate between BBLs, which is typical because
         //optimizing compilers 16B-align most branch targets (and if it doesn't happen, the error introduced is fairly small)
 
         //1. Predecoding
-        uint32_t predecCycle[instrs];
+        std::vector<uint32_t> predecCycle;
         uint32_t pcyc = 0;
         uint32_t psz = 0;
         uint32_t pcnt = 0;
         uint32_t pblk = 0;
 
-        ADDRINT startAddr = (INS_Address(instrDesc[0]) >> 4) << 4;
+        ADDRINT startAddr = bbl.startAddress & ~0xfUL;
 
-        for (uint32_t i = 0; i < instrs; i++) {
+        for (uint32_t i = 0; i < instrDesc.size(); i++) {
             INS ins = instrDesc[i];
-            ADDRINT addr = INS_Address(ins);
-            uint32_t bytes = INS_Size(ins);
+            ADDRINT addr = instrAddr[i];
+            uint32_t bytes = instrBytes[i];
             uint32_t block = (addr - startAddr) >> 4;
             psz += bytes;
             pcnt++;
@@ -1016,7 +906,7 @@ BblInfo* Decoder::decodeBbl(BBL bbl, bool oooDecoding) {
         uint32_t dsimple = 0;
         uint32_t dcomplex = 0;
 
-        for (uint32_t i = 0; i < instrs; i++) {
+        for (uint32_t i = 0; i < instrDesc.size(); i++) {
             if (instrUops[i] == 0) continue; //fused branch
 
             uint32_t pcyc = predecCycle[i];
@@ -1054,7 +944,7 @@ BblInfo* Decoder::decodeBbl(BBL bbl, bool oooDecoding) {
 
         //Initialize ooo part
         DynBbl& dynBbl = bblInfo->oooBbl[0];
-        dynBbl.addr = BBL_Address(bbl);
+        dynBbl.addr = bbl.startAddress;
         dynBbl.uops = uopVec.size();
         dynBbl.approxInstrs = approxInstrs;
         for (uint32_t i = 0; i < dynBbl.uops; i++) dynBbl.uop[i] = uopVec[i];
@@ -1075,7 +965,7 @@ BblInfo* Decoder::decodeBbl(BBL bbl, bool oooDecoding) {
     }
 
     //Initialize generic part
-    bblInfo->instrs = instrs;
+    bblInfo->instrs = instrDesc.size();
     bblInfo->bytes = bytes;
 
     return bblInfo;

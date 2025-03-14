@@ -27,9 +27,53 @@
 #define CORE_H_
 
 #include <stdint.h>
-#include "decoder.h"
 #include "g_std/g_string.h"
 #include "stats.h"
+
+typedef uint32_t INS;
+
+struct BasicBlock {
+    size_t codeBytes;
+    uint8_t *code;
+    uint64_t startAddress;
+    size_t programIndex;
+
+    void resetProgramIndex() {
+        programIndex = 0;
+    }
+    
+    INS getHeadInstruction(size_t *index = nullptr, uint8_t *instLength = nullptr, bool lookahead = false) {
+        if (programIndex >= codeBytes) {
+            programIndex += 4;
+            return 0xffffffff;
+        }
+        if (index) {
+            *index = programIndex;
+        }
+        INS tryFetch = *(INS *)(code + programIndex);
+        uint8_t firstTwoBits = tryFetch & 0x03;
+        switch (firstTwoBits) {
+            case 0x0:
+            case 0x1:
+            case 0x2:
+                if (instLength) {
+                    *instLength = 2;
+                }
+                programIndex += lookahead ? 0 : 2;
+                return tryFetch & 0xffff;
+            default:
+                if (instLength) {
+                    *instLength = 4;
+                }
+                programIndex += lookahead ? 0 : 4;
+                return tryFetch;
+        }
+    }
+
+    bool endOfBlock() {
+        return programIndex > codeBytes;
+    }
+};
 
 struct BblInfo {
     uint32_t instrs;
