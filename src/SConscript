@@ -3,8 +3,8 @@
 import os
 Import("env")
 
-commonSrcs = ["config.cpp", "galloc.cpp", "log.cpp", "pin_cmd.cpp"]
-harnessSrcs = ["zsim_harness.cpp", "debug_harness.cpp"]
+commonSrcs = ["config.cpp", "galloc.cpp", "log.cpp"]
+harnessSrcs = ["debug_harness.cpp"]
 
 # By default, we compile all cpp files in libzsim.so. List the cpp files that
 # should be excluded below (one per line and in order, to ease merges)
@@ -39,7 +39,7 @@ traceEnv.Program("sorttrace", ["sorttrace.cpp", "access_tracing.cpp"] + commonSr
 # NOTE(gaomy): with PinCRT we cannot build static as CRT only provides shared libs.
 # env["LINKFLAGS"] += " --static "
 env["LIBS"] += ["c"] # required by wordexp in zsim harness
-env.Program("zsim", harnessSrcs + commonSrcs)
+env.Program("zsim", commonSrcs)
 
 # Build additional utilities below
 env.Program("fftoggle", ["fftoggle.cpp"] + commonSrcs)
