@@ -154,14 +154,8 @@ class Decoder {
 
     public:
         //If oooDecoding is true, produces a DynBbl with DynUops that can be used in OOO cores
-        static BblInfo* decodeBbl(struct BasicBlock bbl, bool oooDecoding);
+        static BblInfo* decodeBbl(struct BasicBlock &bbl, bool oooDecoding);
 
-#ifdef BBL_PROFILING
-        static void profileBbl(uint64_t bblIdx);
-        static void dumpBblProfile();
-#endif
-
-    private:
         static uint8_t riscvInsOpCode(INS ins);
         static uint8_t riscvInsFunct3(INS ins);
         static uint8_t riscvInsFunct7(INS ins);
@@ -170,6 +164,16 @@ class Decoder {
         static uint8_t riscvInsArithRs1(INS ins);
         static uint8_t riscvInsArithRs2(INS ins);
         static uint8_t riscvCompressedRegDecode(uint8_t reg);
+        static bool riscvInsIsLoad(INS ins);
+        static bool riscvInsIsStore(INS ins);
+        static bool riscvInsIsBranch(INS ins);
+
+#ifdef BBL_PROFILING
+        static void profileBbl(uint64_t bblIdx);
+        static void dumpBblProfile();
+#endif
+
+    private:
         //Return true if inaccurate decoding, false if accurate
         static bool decodeInstr(INS ins, DynUopVec& uops);
 
@@ -200,9 +204,5 @@ class Decoder {
         /* Macro-op (ins) fusion */
         static bool canFuse(INS ins);
 };
-
-typedef uint64_t THREADID;
-typedef uint64_t ADDRINT;
-typedef bool BOOL;
 
 #endif  // DECODER_H_

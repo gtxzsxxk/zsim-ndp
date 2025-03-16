@@ -266,13 +266,9 @@ void Scheduler::watchdogThreadFunc() {
     info("Finished scheduler watchdog thread");
 }
 
-void Scheduler::threadTrampoline(void* arg) {
-    Scheduler* sched = static_cast<Scheduler*>(arg);
-    sched->watchdogThreadFunc();
-}
-
-void Scheduler::startWatchdogThread() {
-    PIN_SpawnInternalThread(threadTrampoline, this, 64*1024, nullptr);
+void Scheduler::threadTrampoline(Scheduler* arg) {
+    while (arg->schedInitialized.load());
+    arg->watchdogThreadFunc();
 }
 
 

@@ -29,12 +29,31 @@
 #include <stdint.h>
 #include "g_std/g_string.h"
 #include "stats.h"
+#include <memory>
 
 typedef uint32_t INS;
+typedef uint64_t THREADID;
+typedef uint64_t ADDRINT;
+typedef bool BOOL;
+
+struct BranchInformation {
+    ADDRINT branchPc;  //0 if last bbl was not a conditional branch
+    bool branchTaken;
+    ADDRINT branchTakenNpc;
+    ADDRINT branchNotTakenNpc;
+};
+
+struct BasicBlockLoadStore {
+    ADDRINT address;
+    BOOL entryValid;
+    struct BasicBlockLoadStore *next;
+};
 
 struct BasicBlock {
     size_t codeBytes;
     uint8_t *code;
+    struct BasicBlockLoadStore *loadStore;
+    struct BranchInformation branchInfo;
     uint64_t startAddress;
     size_t programIndex;
 
@@ -73,6 +92,11 @@ struct BasicBlock {
     bool endOfBlock() {
         return programIndex > codeBytes;
     }
+};
+
+struct FrontendTrace {
+    struct BasicBlock *blocks;
+    size_t count;
 };
 
 struct BblInfo {

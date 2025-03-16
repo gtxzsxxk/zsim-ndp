@@ -28,6 +28,7 @@
 
 #include "zsim.h"
 #include <algorithm>
+#include <cstddef>
 #include <signal.h>
 #include <dlfcn.h>
 #include <execinfo.h>
@@ -45,6 +46,7 @@
 #include "constants.h"
 #include "contention_sim.h"
 #include "core.h"
+#include "decoder.h"
 #include "cpuenum.h"
 #include "cpuid.h"
 #include "debug_zsim.h"
@@ -63,32 +65,6 @@ using namespace std;
 
 /* Command-line switches (used to pass info from harness that cannot be passed through the config file, most config is file-based) */
 
-KNOB<INT32> KnobProcIdx(KNOB_MODE_WRITEONCE, "pintool",
-        "procIdx", "0", "zsim process idx (internal)");
-
-KNOB<INT32> KnobShmid(KNOB_MODE_WRITEONCE, "pintool",
-        "shmid", "0", "SysV IPC shared memory id used when running in multi-process mode");
-
-KNOB<string> KnobConfigFile(KNOB_MODE_WRITEONCE, "pintool",
-        "config", "zsim.cfg", "config file name (only needed for the first simulated process)");
-
-//We need to know these as soon as we start, otherwise we could not log anything until we attach and read the config
-KNOB<bool> KnobLogToFile(KNOB_MODE_WRITEONCE, "pintool",
-        "logToFile", "false", "true if all messages should be logged to a logfile instead of stdout/err");
-
-KNOB<string> KnobOutputDir(KNOB_MODE_WRITEONCE, "pintool",
-        "outputDir", "./", "absolute path to write output files into");
-
-
-
-/* ===================================================================== */
-
-INT32 Usage() {
-    cerr << "zsim simulator pintool" << endl;
-    cerr << KNOB_BASE::StringKnobSummary();
-    cerr << endl;
-    return -1;
-}
 
 /* Global Variables */
 
@@ -138,19 +114,14 @@ uint32_t getCid(uint32_t tid) {
 void EnterFastForward();
 void ExitFastForward();
 
-VOID SimThreadStart(THREADID tid);
-VOID SimThreadFini(THREADID tid);
-VOID SimEnd();
+void SimThreadStart(THREADID tid);
+void SimThreadFini(THREADID tid);
+void SimEnd();
 
-VOID HandleMagicOp(THREADID tid, ADDRINT op);
+void HandleMagicOp(THREADID tid, ADDRINT op);
 
-VOID FakeCPUIDPre(THREADID tid, REG eax, REG ecx);
-VOID FakeCPUIDPost(THREADID tid, ADDRINT* eax, ADDRINT* ebx, ADDRINT* ecx, ADDRINT* edx); //REG* eax, REG* ebx, REG* ecx, REG* edx);
-
-VOID FakeRDTSCPost(THREADID tid, REG* eax, REG* edx);
-
-VOID VdsoInstrument(INS ins);
-VOID FFThread(VOID* arg);
+void VdsoInstrument(INS ins);
+void FFThread(void* arg);
 
 /* Indirect analysis calls to work around PIN's synchronization
  *
@@ -165,27 +136,27 @@ VOID FFThread(VOID* arg);
 
 InstrFuncPtrs fPtrs[MAX_THREADS] ATTR_LINE_ALIGNED; //minimize false sharing
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectLoadSingle(THREADID tid, ADDRINT addr) {
+void IndirectLoadSingle(THREADID tid, ADDRINT addr) {
     fPtrs[tid].loadPtr(tid, addr);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectStoreSingle(THREADID tid, ADDRINT addr) {
+void IndirectStoreSingle(THREADID tid, ADDRINT addr) {
     fPtrs[tid].storePtr(tid, addr);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
+void IndirectBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     fPtrs[tid].bblPtr(tid, bblAddr, bblInfo);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectRecordBranch(THREADID tid, ADDRINT branchPc, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {
+void IndirectRecordBranch(THREADID tid, ADDRINT branchPc, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {
     fPtrs[tid].branchPtr(tid, branchPc, taken, takenNpc, notTakenNpc);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred) {
+void IndirectPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred) {
     fPtrs[tid].predLoadPtr(tid, addr, pred);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {
+void IndirectPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {
     fPtrs[tid].predStorePtr(tid, addr, pred);
 }
 
@@ -207,44 +178,44 @@ void Join(uint32_t tid) {
     fPtrs[tid] = cores[tid]->GetFuncPtrs(); //back to normal pointers
 }
 
-VOID JoinAndLoadSingle(THREADID tid, ADDRINT addr) {
+void JoinAndLoadSingle(THREADID tid, ADDRINT addr) {
     Join(tid);
     fPtrs[tid].loadPtr(tid, addr);
 }
 
-VOID JoinAndStoreSingle(THREADID tid, ADDRINT addr) {
+void JoinAndStoreSingle(THREADID tid, ADDRINT addr) {
     Join(tid);
     fPtrs[tid].storePtr(tid, addr);
 }
 
-VOID JoinAndBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
+void JoinAndBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     Join(tid);
     fPtrs[tid].bblPtr(tid, bblAddr, bblInfo);
 }
 
-VOID JoinAndRecordBranch(THREADID tid, ADDRINT branchPc, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {
+void JoinAndRecordBranch(THREADID tid, ADDRINT branchPc, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {
     Join(tid);
     fPtrs[tid].branchPtr(tid, branchPc, taken, takenNpc, notTakenNpc);
 }
 
-VOID JoinAndPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred) {
+void JoinAndPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred) {
     Join(tid);
     fPtrs[tid].predLoadPtr(tid, addr, pred);
 }
 
-VOID JoinAndPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {
+void JoinAndPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {
     Join(tid);
     fPtrs[tid].predStorePtr(tid, addr, pred);
 }
 
 // NOP variants: Do nothing
-VOID NOPLoadStoreSingle(THREADID tid, ADDRINT addr) {}
-VOID NOPBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {}
-VOID NOPRecordBranch(THREADID tid, ADDRINT addr, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {}
-VOID NOPPredLoadStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {}
+void NOPLoadStoreSingle(THREADID tid, ADDRINT addr) {}
+void NOPBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {}
+void NOPRecordBranch(THREADID tid, ADDRINT addr, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {}
+void NOPPredLoadStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {}
 
 // FF is basically NOP except for basic blocks
-VOID FFBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
+void FFBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     if (unlikely(!procTreeNode->isInFastForward())) {
         SimThreadStart(tid);
     }
@@ -278,7 +249,7 @@ static uint64_t* ffiPrevFFStartInstrs;
 
 static const InstrFuncPtrs& GetFFPtrs();
 
-VOID FFITrackNFFInterval() {
+void FFITrackNFFInterval() {
     assert(!procTreeNode->isInFastForward());
     assert(ffiInstrsDone < ffiInstrsLimit); //unless you have ~10-instr FFWds, this does not happen
 
@@ -305,7 +276,7 @@ VOID FFITrackNFFInterval() {
 }
 
 // Called on process start
-VOID FFIInit() {
+void FFIInit() {
     const g_vector<uint64_t>& ffiPoints = procTreeNode->getFFIPoints();
     if (!ffiPoints.empty()) {
         if (zinfo->ffReinstrument) panic("FFI and reinstrumenting on FF switches are incompatible");
@@ -325,7 +296,7 @@ VOID FFIInit() {
 }
 
 //Set the next ffiPoint, or finish
-VOID FFIAdvance() {
+void FFIAdvance() {
     const g_vector<uint64_t>& ffiPoints = procTreeNode->getFFIPoints();
     ffiPoint++;
     if (ffiPoint >= ffiPoints.size()) {
@@ -337,7 +308,7 @@ VOID FFIAdvance() {
     }
 }
 
-VOID FFIBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
+void FFIBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     ffiInstrsDone += bblInfo->instrs;
     if (unlikely(ffiInstrsDone >= ffiInstrsLimit)) {
         FFIAdvance();
@@ -353,7 +324,7 @@ VOID FFIBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
 }
 
 // One-off, called after we go from NFF to FF
-VOID FFIEntryBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
+void FFIEntryBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     ffiInstrsDone += *ffiFFStartInstrs - *ffiPrevFFStartInstrs; //add all instructions executed in the NFF phase
     FFIAdvance();
     assert(ffiNFF);
@@ -381,10 +352,6 @@ void EnterFastForward() {
     procTreeNode->enterFastForward();
     __sync_synchronize(); //Make change globally visible
 
-    //Re-instrument; VM/client lock are not needed
-    if (zinfo->ffReinstrument) {
-        PIN_RemoveInstrumentation();
-    }
     //Transition to FF; we have the ff lock, this should be safe with end of phase code. This avoids profiling the end of a simulation as bound time
     //NOTE: Does not work well with multiprocess runs
     zinfo->profSimTime->transition(PROF_FF);
@@ -394,15 +361,8 @@ void EnterFastForward() {
 void ExitFastForward() {
     assert(procTreeNode->isInFastForward());
 
-    VirtCaptureClocks(true /*exiting ffwd*/);
-
     procTreeNode->exitFastForward();
     __sync_synchronize(); //make change globally visible
-
-    //Re-instrument; VM/client lock are not needed
-    if (zinfo->ffReinstrument) {
-        PIN_RemoveInstrumentation();
-    }
 }
 
 
@@ -410,9 +370,9 @@ void ExitFastForward() {
 //Termination
 volatile uint32_t perProcessEndFlag;
 
-VOID SimEnd();
+void SimEnd();
 
-VOID CheckForTermination() {
+void CheckForTermination() {
     assert(zinfo->terminationConditionMet == false);
     if (zinfo->maxPhases && zinfo->numPhases >= zinfo->maxPhases) {
         zinfo->terminationConditionMet = true;
@@ -468,7 +428,7 @@ VOID CheckForTermination() {
 /* This is called by the scheduler at the end of a phase. At that point, zinfo->numPhases
  * has not incremented, so it denotes the END of the current phase
  */
-VOID EndOfPhaseActions() {
+void EndOfPhaseActions() {
     zinfo->profSimTime->transition(PROF_WEAVE);
     if (zinfo->globalPauseFlag) {
         info("Simulation entering global pause");
@@ -534,47 +494,34 @@ static void PrintIp(THREADID tid, ADDRINT ip) {
 }
 #endif
 
-VOID Instruction(INS ins) {
+void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *loadStore,
+        struct BranchInformation *branchInfo) {
     //Uncomment to print an instruction trace
     //INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)PrintIp, IARG_THREAD_ID, IARG_REG_VALUE, REG_INST_PTR, IARG_END);
 
     if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
-        AFUNPTR LoadFuncPtr = (AFUNPTR) IndirectLoadSingle;
-        AFUNPTR StoreFuncPtr = (AFUNPTR) IndirectStoreSingle;
+        void (*LoadStoreFuncPtr)(THREADID, ADDRINT) = nullptr;
 
-        AFUNPTR PredLoadFuncPtr = (AFUNPTR) IndirectPredLoadSingle;
-        AFUNPTR PredStoreFuncPtr = (AFUNPTR) IndirectPredStoreSingle;
-
-        if (INS_IsMemoryRead(ins)) {
-            if (!INS_IsPredicated(ins)) {
-                INS_InsertCall(ins, IPOINT_BEFORE, LoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_END);
-            } else {
-                INS_InsertCall(ins, IPOINT_BEFORE, PredLoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_EXECUTING, IARG_END);
+        bool isLoad = Decoder::riscvInsIsLoad(ins);
+        bool isStore = Decoder::riscvInsIsStore(ins);
+        if (isLoad) {
+            LoadStoreFuncPtr = IndirectLoadSingle;
+        }
+        if (isStore) {
+            LoadStoreFuncPtr = IndirectStoreSingle;
+        }
+        if (isLoad || isStore) {
+            struct BasicBlockLoadStore *loadStoreList = loadStore;
+            while (loadStoreList != nullptr) {
+                assert(loadStoreList->entryValid);
+                LoadStoreFuncPtr(tid, loadStoreList->address);
+                loadStoreList = loadStore->next;
             }
         }
 
-        if (INS_HasMemoryRead2(ins)) {
-            if (!INS_IsPredicated(ins)) {
-                INS_InsertCall(ins, IPOINT_BEFORE, LoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD2_EA, IARG_END);
-            } else {
-                INS_InsertCall(ins, IPOINT_BEFORE, PredLoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD2_EA, IARG_EXECUTING, IARG_END);
-            }
-        }
-
-        if (INS_IsMemoryWrite(ins)) {
-            if (!INS_IsPredicated(ins)) {
-                INS_InsertCall(ins, IPOINT_BEFORE,  StoreFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_END);
-            } else {
-                INS_InsertCall(ins, IPOINT_BEFORE,  PredStoreFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_EXECUTING, IARG_END);
-            }
-        }
-
-        // Instrument only conditional branches
-        // IARG_BRANCH_TARGET_ADDR is invalid in some cases, such as far-call and XEND.
-        if (INS_Category(ins) == XED_CATEGORY_COND_BR
-                && !(INS_IsFarCall(ins) || INS_IsXbegin(ins) || INS_IsXend(ins))) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) IndirectRecordBranch, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID,
-                    IARG_INST_PTR, IARG_BRANCH_TAKEN, IARG_BRANCH_TARGET_ADDR, IARG_FALLTHROUGH_ADDR, IARG_END);
+        if (Decoder::riscvInsIsBranch(ins)) {
+            IndirectRecordBranch(tid, branchInfo->branchPc, branchInfo->branchTaken,
+                branchInfo->branchTakenNpc, branchInfo->branchNotTakenNpc);
         }
     }
 
@@ -583,41 +530,41 @@ VOID Instruction(INS ins) {
      * is never emitted by any x86 compiler, as they use other (recommended) nop
      * instructions or sequences.
      */
-    if (INS_IsXchg(ins) && INS_OperandReg(ins, 0) == REG_RCX && INS_OperandReg(ins, 1) == REG_RCX) {
-        //info("Instrumenting magic op");
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) HandleMagicOp, IARG_THREAD_ID, IARG_REG_VALUE, REG_ECX, IARG_END);
-    }
+    // if (INS_IsXchg(ins) && INS_OperandReg(ins, 0) == REG_RCX && INS_OperandReg(ins, 1) == REG_RCX) {
+    //     //info("Instrumenting magic op");
+    //     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) HandleMagicOp, IARG_THREAD_ID, IARG_REG_VALUE, REG_ECX, IARG_END);
+    // }
 
-    if (INS_Opcode(ins) == XED_ICLASS_CPUID) {
-       INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) FakeCPUIDPre, IARG_THREAD_ID, IARG_REG_VALUE, REG_EAX, IARG_REG_VALUE, REG_ECX, IARG_END);
-       INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) FakeCPUIDPost, IARG_THREAD_ID, IARG_REG_REFERENCE, REG_EAX,
-               IARG_REG_REFERENCE, REG_EBX, IARG_REG_REFERENCE, REG_ECX, IARG_REG_REFERENCE, REG_EDX, IARG_END);
-    }
+    // if (INS_Opcode(ins) == XED_ICLASS_CPUID) {
+    //    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) FakeCPUIDPre, IARG_THREAD_ID, IARG_REG_VALUE, REG_EAX, IARG_REG_VALUE, REG_ECX, IARG_END);
+    //    INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) FakeCPUIDPost, IARG_THREAD_ID, IARG_REG_REFERENCE, REG_EAX,
+    //            IARG_REG_REFERENCE, REG_EBX, IARG_REG_REFERENCE, REG_ECX, IARG_REG_REFERENCE, REG_EDX, IARG_END);
+    // }
 
-    if (INS_IsRDTSC(ins)) {
-        //No pre; note that this also instruments RDTSCP
-        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) FakeRDTSCPost, IARG_THREAD_ID, IARG_REG_REFERENCE, REG_EAX, IARG_REG_REFERENCE, REG_EDX, IARG_END);
-    }
-
-    //Must run for every instruction
-    VdsoInstrument(ins);
+    // if (INS_IsRDTSC(ins)) {
+    //     //No pre; note that this also instruments RDTSCP
+    //     INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) FakeRDTSCPost, IARG_THREAD_ID, IARG_REG_REFERENCE, REG_EAX, IARG_REG_REFERENCE, REG_EDX, IARG_END);
+    // }
 }
 
 
-VOID Trace(TRACE trace, VOID *v) {
+void Trace(THREADID tid, struct FrontendTrace trace) {
     if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
         // Visit every basic block in the trace
-        for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
+        for (size_t i = 0; i < trace.count; i++) {
+            struct BasicBlock &bbl = trace.blocks[i];
             BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
-            BBL_InsertCall(bbl, IPOINT_BEFORE /*could do IPOINT_ANYWHERE if we redid load and store simulation in OOO*/, (AFUNPTR)IndirectBasicBlock, IARG_FAST_ANALYSIS_CALL,
-                 IARG_THREAD_ID, IARG_ADDRINT, BBL_Address(bbl), IARG_PTR, bblInfo, IARG_END);
+            IndirectBasicBlock(tid, bbl.startAddress, bblInfo);
         }
     }
 
-    //Instruction instrumentation now here to ensure proper ordering
-    for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
-        for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
-            Instruction(ins);
+    for (size_t i = 0; i < trace.count; i++) {
+        struct BasicBlock &bbl = trace.blocks[i];
+        bbl.resetProgramIndex();
+        size_t instIndex = 0;
+        for (INS ins = bbl.getHeadInstruction(); bbl.endOfBlock();
+                ins = bbl.getHeadInstruction(), instIndex++) {
+            PrepareNextInstruction(tid, ins, &bbl.loadStore[instIndex], &bbl.branchInfo);
         }
     }
 }
@@ -653,7 +600,7 @@ void SimThreadStart(THREADID tid) {
     clearCid(tid); //just in case, set an invalid cid
 }
 
-VOID ThreadStart(THREADID tid, CONTEXT *ctxt, INT32 flags, VOID *v) {
+void ThreadStart(THREADID tid) {
     /* This should only fire for the first thread; I know this is a callback,
      * everything is serialized etc; that's the point, we block everything.
      * It's here and not in main() because that way the auxiliary threads can
@@ -679,7 +626,7 @@ VOID ThreadStart(THREADID tid, CONTEXT *ctxt, INT32 flags, VOID *v) {
     }
 }
 
-VOID SimThreadFini(THREADID tid) {
+void SimThreadFini(THREADID tid) {
     // zinfo->sched->leave(); //exit syscall (SyscallEnter) already leaves
     zinfo->sched->finish(procIdx, tid);
     activeThreads[tid] = false;
@@ -692,7 +639,7 @@ VOID SimThreadFini(THREADID tid) {
 #define QUOTED_(x) #x
 #define QUOTED(x) QUOTED_(x)
 
-VOID SimEnd() {
+void SimEnd() {
     if (__sync_bool_compare_and_swap(&perProcessEndFlag, 0, 1) == false) { //failed, note DEPENDS ON STRONG CAS
         while (true) { //sleep until thread that won exits for us
             struct timespec tm;
@@ -745,154 +692,154 @@ VOID SimEnd() {
 #define ZSIM_MAGIC_OP_REGISTER_THREAD   (1027)
 #define ZSIM_MAGIC_OP_HEARTBEAT         (1028)
 
-VOID HandleMagicOp(THREADID tid, ADDRINT op) {
-    switch (op) {
-        case ZSIM_MAGIC_OP_ROI_BEGIN:
-            if (!zinfo->ignoreHooks) {
-                //TODO: Test whether this is thread-safe
-                futex_lock(&zinfo->ffLock);
-                if (procTreeNode->isInFastForward()) {
-                    info("ROI_BEGIN, exiting fast-forward");
-                    ExitFastForward();
-                } else {
-                    warn("Ignoring ROI_BEGIN magic op, not in fast-forward");
-                }
-                futex_unlock(&zinfo->ffLock);
-            }
-            return;
-        case ZSIM_MAGIC_OP_ROI_END:
-            if (!zinfo->ignoreHooks) {
-                //TODO: Test whether this is thread-safe
-                futex_lock(&zinfo->ffLock);
-                if (procTreeNode->getSyncedFastForward()) {
-                    warn("Ignoring ROI_END magic op on synced FF to avoid deadlock");
-                } else if (!procTreeNode->isInFastForward()) {
-                    info("ROI_END, entering fast-forward");
-                    EnterFastForward();
-                    //If we don't do this, we'll enter FF on the next phase. Which would be OK, except with synced FF
-                    //we stay in the barrier forever. And deadlock. And the deadlock code does nothing, since we're in FF
-                    //So, force immediate entry if we're sync-ffwding
-                    if (procTreeNode->getSyncedFastForward()) {
-                        info("Thread %d entering fast-forward (immediate)", tid);
-                        uint32_t cid = getCid(tid);
-                        assert(cid != INVALID_CID);
-                        clearCid(tid);
-                        zinfo->sched->leave(procIdx, tid, cid);
-                        SimThreadFini(tid);
-                        fPtrs[tid] = GetFFPtrs();
-                    }
-                } else {
-                    warn("Ignoring ROI_END magic op, already in fast-forward");
-                }
-                futex_unlock(&zinfo->ffLock);
-            }
-            return;
-        case ZSIM_MAGIC_OP_REGISTER_THREAD:
-            if (!zinfo->registerThreads) {
-                info("Thread %d: Treating REGISTER_THREAD magic op as NOP", tid);
-            } else {
-                if (fPtrs[tid].type == FPTR_NOP) {
-                    SimThreadStart(tid);
-                } else {
-                    warn("Thread %d: Treating REGISTER_THREAD magic op as NOP, thread already registered", tid);
-                }
-            }
-            return;
-        case ZSIM_MAGIC_OP_HEARTBEAT:
-            procTreeNode->heartbeat(); //heartbeats are per process for now
-            return;
+// VOID HandleMagicOp(THREADID tid, ADDRINT op) {
+//     switch (op) {
+//         case ZSIM_MAGIC_OP_ROI_BEGIN:
+//             if (!zinfo->ignoreHooks) {
+//                 //TODO: Test whether this is thread-safe
+//                 futex_lock(&zinfo->ffLock);
+//                 if (procTreeNode->isInFastForward()) {
+//                     info("ROI_BEGIN, exiting fast-forward");
+//                     ExitFastForward();
+//                 } else {
+//                     warn("Ignoring ROI_BEGIN magic op, not in fast-forward");
+//                 }
+//                 futex_unlock(&zinfo->ffLock);
+//             }
+//             return;
+//         case ZSIM_MAGIC_OP_ROI_END:
+//             if (!zinfo->ignoreHooks) {
+//                 //TODO: Test whether this is thread-safe
+//                 futex_lock(&zinfo->ffLock);
+//                 if (procTreeNode->getSyncedFastForward()) {
+//                     warn("Ignoring ROI_END magic op on synced FF to avoid deadlock");
+//                 } else if (!procTreeNode->isInFastForward()) {
+//                     info("ROI_END, entering fast-forward");
+//                     EnterFastForward();
+//                     //If we don't do this, we'll enter FF on the next phase. Which would be OK, except with synced FF
+//                     //we stay in the barrier forever. And deadlock. And the deadlock code does nothing, since we're in FF
+//                     //So, force immediate entry if we're sync-ffwding
+//                     if (procTreeNode->getSyncedFastForward()) {
+//                         info("Thread %d entering fast-forward (immediate)", tid);
+//                         uint32_t cid = getCid(tid);
+//                         assert(cid != INVALID_CID);
+//                         clearCid(tid);
+//                         zinfo->sched->leave(procIdx, tid, cid);
+//                         SimThreadFini(tid);
+//                         fPtrs[tid] = GetFFPtrs();
+//                     }
+//                 } else {
+//                     warn("Ignoring ROI_END magic op, already in fast-forward");
+//                 }
+//                 futex_unlock(&zinfo->ffLock);
+//             }
+//             return;
+//         case ZSIM_MAGIC_OP_REGISTER_THREAD:
+//             if (!zinfo->registerThreads) {
+//                 info("Thread %d: Treating REGISTER_THREAD magic op as NOP", tid);
+//             } else {
+//                 if (fPtrs[tid].type == FPTR_NOP) {
+//                     SimThreadStart(tid);
+//                 } else {
+//                     warn("Thread %d: Treating REGISTER_THREAD magic op as NOP, thread already registered", tid);
+//                 }
+//             }
+//             return;
+//         case ZSIM_MAGIC_OP_HEARTBEAT:
+//             procTreeNode->heartbeat(); //heartbeats are per process for now
+//             return;
 
-        // HACK: Ubik magic ops
-        case 1029:
-        case 1030:
-        case 1031:
-        case 1032:
-        case 1033:
-            return;
-        default:
-            panic("Thread %d issued unknown magic op %ld!", tid, op);
-    }
-}
+//         // HACK: Ubik magic ops
+//         case 1029:
+//         case 1030:
+//         case 1031:
+//         case 1032:
+//         case 1033:
+//             return;
+//         default:
+//             panic("Thread %d issued unknown magic op %ld!", tid, op);
+//     }
+// }
 
-//CPUIID faking
-static uint32_t cpuidEax[MAX_THREADS];
-static uint32_t cpuidEcx[MAX_THREADS];
+// //CPUIID faking
+// static uint32_t cpuidEax[MAX_THREADS];
+// static uint32_t cpuidEcx[MAX_THREADS];
 
-VOID FakeCPUIDPre(THREADID tid, REG eax, REG ecx) {
-    //info("%d precpuid", tid);
-    cpuidEax[tid] = eax;
-    cpuidEcx[tid] = ecx;
-}
+// VOID FakeCPUIDPre(THREADID tid, REG eax, REG ecx) {
+//     //info("%d precpuid", tid);
+//     cpuidEax[tid] = eax;
+//     cpuidEcx[tid] = ecx;
+// }
 
-VOID FakeCPUIDPost(THREADID tid, ADDRINT* eax, ADDRINT* ebx, ADDRINT* ecx, ADDRINT* edx) {
-    uint32_t eaxIn = cpuidEax[tid];
-    uint32_t ecxIn = cpuidEcx[tid];
+// VOID FakeCPUIDPost(THREADID tid, ADDRINT* eax, ADDRINT* ebx, ADDRINT* ecx, ADDRINT* edx) {
+//     uint32_t eaxIn = cpuidEax[tid];
+//     uint32_t ecxIn = cpuidEcx[tid];
 
-    // Point to record at same (eax,ecx) or immediately before
-    CpuIdRecord val = {eaxIn, ecxIn, (uint32_t)-1, (uint32_t)-1, (uint32_t)-1, (uint32_t)-1};
-    CpuIdRecord* pos = std::lower_bound(cpuid_core2, cpuid_core2+(sizeof(cpuid_core2)/sizeof(CpuIdRecord)), val);
-    if (pos->eaxIn > eaxIn) {
-        assert(pos > cpuid_core2);
-        pos--;
-    }
-    assert(pos->eaxIn <= eaxIn);
-    assert(pos->ecxIn <= ecxIn);
+//     // Point to record at same (eax,ecx) or immediately before
+//     CpuIdRecord val = {eaxIn, ecxIn, (uint32_t)-1, (uint32_t)-1, (uint32_t)-1, (uint32_t)-1};
+//     CpuIdRecord* pos = std::lower_bound(cpuid_core2, cpuid_core2+(sizeof(cpuid_core2)/sizeof(CpuIdRecord)), val);
+//     if (pos->eaxIn > eaxIn) {
+//         assert(pos > cpuid_core2);
+//         pos--;
+//     }
+//     assert(pos->eaxIn <= eaxIn);
+//     assert(pos->ecxIn <= ecxIn);
 
-    //info("%x %x : %x %x / %x %x %x %x", eaxIn, ecxIn, pos->eaxIn, pos->ecxIn, pos->eax, pos->ebx, pos->ecx, pos->edx);
+//     //info("%x %x : %x %x / %x %x %x %x", eaxIn, ecxIn, pos->eaxIn, pos->ecxIn, pos->eax, pos->ebx, pos->ecx, pos->edx);
 
-    uint32_t eaxOut = pos->eax;
-    uint32_t ebxOut = pos->ebx;
+//     uint32_t eaxOut = pos->eax;
+//     uint32_t ebxOut = pos->ebx;
 
-    // patch eax to give the number of cores
-    if (eaxIn == 4) {
-        uint32_t ncpus = cpuenumNumCpus(procIdx);
-        uint32_t eax3126 = ncpus - 1;
-        // Overflowing 6 bits?
-        if (zinfo->numCores > 64) eax3126 = 63; //looked into swarm2.csail (4P Westmere-EX, 80 HTs), it sets this to 63
-        eaxOut = (eaxOut & ((1<<26)-1)) | (eax3126<<26);
-    }
+//     // patch eax to give the number of cores
+//     if (eaxIn == 4) {
+//         uint32_t ncpus = cpuenumNumCpus(procIdx);
+//         uint32_t eax3126 = ncpus - 1;
+//         // Overflowing 6 bits?
+//         if (zinfo->numCores > 64) eax3126 = 63; //looked into swarm2.csail (4P Westmere-EX, 80 HTs), it sets this to 63
+//         eaxOut = (eaxOut & ((1<<26)-1)) | (eax3126<<26);
+//     }
 
-    // HT siblings and APIC (core) ID (apparently used; seems Intel-specific)
-    if (eaxIn == 0x1) {
-        uint32_t cid = getCid(tid);
-        uint32_t cpu = cpuenumCpu(procIdx, cid);
-        uint32_t ncpus = cpuenumNumCpus(procIdx);
-        uint32_t siblings = MIN(ncpus, (uint32_t)255);
-        uint32_t apicId = (cpu < ncpus)? MIN(cpu, (uint32_t)255) : 0 /*not scheduled, ffwd?*/;
-        ebxOut = (ebxOut & 0xffff) | (siblings << 16) | (apicId << 24);
-    }
+//     // HT siblings and APIC (core) ID (apparently used; seems Intel-specific)
+//     if (eaxIn == 0x1) {
+//         uint32_t cid = getCid(tid);
+//         uint32_t cpu = cpuenumCpu(procIdx, cid);
+//         uint32_t ncpus = cpuenumNumCpus(procIdx);
+//         uint32_t siblings = MIN(ncpus, (uint32_t)255);
+//         uint32_t apicId = (cpu < ncpus)? MIN(cpu, (uint32_t)255) : 0 /*not scheduled, ffwd?*/;
+//         ebxOut = (ebxOut & 0xffff) | (siblings << 16) | (apicId << 24);
+//     }
 
-    //info("[%d] postcpuid, inEax 0x%x, pre 0x%lx 0x%lx 0x%lx 0x%lx", tid, eaxIn, *eax, *ebx, *ecx, *edx);
-    //Preserve high bits
-    *reinterpret_cast<uint32_t*>(eax) = eaxOut;
-    *reinterpret_cast<uint32_t*>(ebx) = ebxOut;
-    *reinterpret_cast<uint32_t*>(ecx) = pos->ecx;
-    *reinterpret_cast<uint32_t*>(edx) = pos->edx;
-    //info("[%d] postcpuid, inEax 0x%x, post 0x%lx 0x%lx 0x%lx 0x%lx", tid, eaxIn, *eax, *ebx, *ecx, *edx);
-}
+//     //info("[%d] postcpuid, inEax 0x%x, pre 0x%lx 0x%lx 0x%lx 0x%lx", tid, eaxIn, *eax, *ebx, *ecx, *edx);
+//     //Preserve high bits
+//     *reinterpret_cast<uint32_t*>(eax) = eaxOut;
+//     *reinterpret_cast<uint32_t*>(ebx) = ebxOut;
+//     *reinterpret_cast<uint32_t*>(ecx) = pos->ecx;
+//     *reinterpret_cast<uint32_t*>(edx) = pos->edx;
+//     //info("[%d] postcpuid, inEax 0x%x, post 0x%lx 0x%lx 0x%lx 0x%lx", tid, eaxIn, *eax, *ebx, *ecx, *edx);
+// }
 
 
-//RDTSC faking
-VOID FakeRDTSCPost(THREADID tid, REG* eax, REG* edx) {
-    if (fPtrs[tid].type == FPTR_NOP) return; //avoid virtualizing NOP threads.
+// //RDTSC faking
+// VOID FakeRDTSCPost(THREADID tid, REG* eax, REG* edx) {
+//     if (fPtrs[tid].type == FPTR_NOP) return; //avoid virtualizing NOP threads.
 
-    uint32_t cid = getCid(tid);
-    uint64_t curCycle = VirtGetPhaseRDTSC();
-    if (cid < zinfo->numCores) {
-        curCycle += zinfo->cores[cid]->getPhaseCycles();
-    }
+//     uint32_t cid = getCid(tid);
+//     uint64_t curCycle = VirtGetPhaseRDTSC();
+//     if (cid < zinfo->numCores) {
+//         curCycle += zinfo->cores[cid]->getPhaseCycles();
+//     }
 
-    uint32_t lo = (uint32_t)curCycle;
-    uint32_t hi = (uint32_t)(curCycle >> 32);
+//     uint32_t lo = (uint32_t)curCycle;
+//     uint32_t hi = (uint32_t)(curCycle >> 32);
 
-    assert((((uint64_t)hi) << 32) + lo == curCycle);
+//     assert((((uint64_t)hi) << 32) + lo == curCycle);
 
-    //uint64_t origTSC = (((uint64_t)*edx) << 32) + (uint32_t)*eax;
-    //info("[t%d/c%d] Virtualizing RDTSC, pre = %x %x (%ld), post = %x %x (%ld)", tid, cid, *edx, *eax, origTSC, hi, lo, curCycle);
+//     //uint64_t origTSC = (((uint64_t)*edx) << 32) + (uint32_t)*eax;
+//     //info("[t%d/c%d] Virtualizing RDTSC, pre = %x %x (%ld), post = %x %x (%ld)", tid, cid, *edx, *eax, origTSC, hi, lo, curCycle);
 
-    *eax = (REG)lo;
-    *edx = (REG)hi;
-}
+//     *eax = (REG)lo;
+//     *edx = (REG)hi;
+// }
 
 /* Fast-forward control */
 
@@ -930,7 +877,7 @@ class SyncEvent: public Event {
         }
 };
 
-VOID FFThread(VOID* arg) {
+void FFThread(void* arg) {
     futex_lock(&zinfo->ffToggleLocks[procIdx]); //initialize
     info("FF control Thread TID %ld", syscall(SYS_gettid));
 
@@ -977,12 +924,21 @@ VOID FFThread(VOID* arg) {
 /* ===================================================================== */
 
 int main(int argc, char *argv[]) {
-    procIdx = KnobProcIdx.Value();
+    procIdx = 0;
     char header[64];
     snprintf(header, sizeof(header), "[S %d] ", procIdx);
+
+    /* argv 1 output directory argv 2 log_to_file argv 3 config file */
+    if (argc != 3) {
+        std::cout << "You must specify output directory, log to file and config file option" << std::endl;
+        std::cout << "Default value: ./ false zsim.cfg" << std::endl;
+        return 1;
+    }
+    char *outputDir = argv[1], *logToFile = argv[2], *configFile = argv[3];
+
     std::stringstream logfile_ss;
-    logfile_ss << KnobOutputDir.Value() << "/zsim.log." << procIdx;
-    InitLog(header, KnobLogToFile.Value()? logfile_ss.str().c_str() : nullptr);
+    logfile_ss << outputDir << "/zsim.log." << procIdx;
+    InitLog(header, !strcmp(logToFile, "log_to_file") ? logfile_ss.str().c_str() : nullptr);
 
     //If parent dies, kill us
     //This avoids leaving strays running in any circumstances, but may be too heavy-handed with arbitrary process hierarchies.
@@ -997,26 +953,17 @@ int main(int argc, char *argv[]) {
     //setpriority(PRIO_PROCESS, getpid(), 10);
     //info("setpriority, new prio %d", getpriority(PRIO_PROCESS, getpid()));
 
-    gm_attach(KnobShmid.Value());
+    gm_attach(0);
 
     bool masterProcess = false;
     if (procIdx == 0 && !gm_isready()) {  // process 0 can exec() without fork()ing first, so we must check gm_isready() to ensure we don't initialize twice
         masterProcess = true;
-        SimInit(KnobConfigFile.Value().c_str(), KnobOutputDir.Value().c_str(), KnobShmid.Value());
+        SimInit(configFile, outputDir, 0);
     } else {
         while (!gm_isready()) usleep(1000);  // wait till proc idx 0 initializes everything
         zinfo = static_cast<GlobSimInfo*>(gm_get_glob_ptr());
     }
 
-    //If assertion below fails, use this to print maps
-#if 0
-    futex_lock(&zinfo->ffLock); //whatever lock, just don't interleave
-    std::ifstream infile("/proc/self/maps");
-    std::string line;
-    while (std::getline(infile, line)) info("  %s", line.c_str());
-    futex_unlock(&zinfo->ffLock);
-    usleep(100000);
-#endif
     //LibzsimAddrs sanity check: Ensure that they match across processes
     struct LibInfo libzsimAddrs;
     getLibzsimAddrs(&libzsimAddrs);
@@ -1059,7 +1006,6 @@ int main(int argc, char *argv[]) {
 
     if (zinfo->sched) zinfo->sched->processCleanup(procIdx);
 
-    VirtCaptureClocks(false);
     FFIInit();
 
     return 0;

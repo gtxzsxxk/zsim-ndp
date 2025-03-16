@@ -212,6 +212,21 @@ uint8_t Decoder::riscvInsArithRs2(INS ins) {
     return (ins >> 20) & 0x1f;
 }
 
+bool Decoder::riscvInsIsLoad(INS ins) {
+    auto opcode = riscvInsOpCode(ins);
+    return opcode == RISCV_OPCODE_LOAD || opcode == RISCV_OPCODE_VECTOR_LOAD;
+}
+
+bool Decoder::riscvInsIsStore(INS ins) {
+    auto opcode = riscvInsOpCode(ins);
+    return opcode == RISCV_OPCODE_STORE || opcode == RISCV_OPCODE_VECTOR_STORE;
+}
+
+bool Decoder::riscvInsIsBranch(INS ins) {
+    auto opcode = riscvInsOpCode(ins);
+    return opcode == RISCV_OPCODE_BRANCH;
+}
+
 uint8_t Decoder::riscvCompressedRegDecode(uint8_t reg) {
     assert(reg <= 7);
     return reg + 8;
@@ -822,7 +837,7 @@ bool Decoder::canFuse(INS ins) {
     }
 }
 
-BblInfo* Decoder::decodeBbl(struct BasicBlock bbl, bool oooDecoding) {
+BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
     auto bytes = bbl.codeBytes;
     BblInfo* bblInfo;
 

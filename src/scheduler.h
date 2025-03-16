@@ -32,6 +32,8 @@
 #include <list>
 #include <sstream>
 #include <vector>
+#include <thread>
+#include <atomic>
 #include "barrier.h"
 #include "constants.h"
 #include "core.h"
@@ -171,9 +173,13 @@ class Scheduler : public GlobAlloc, public Callee {
         inline uint32_t getPid(uint32_t gid) const {return gid >> 16;}
         inline uint32_t getTid(uint32_t gid) const {return gid & 0x0FFFF;}
 
+        std::atomic<bool> schedInitialized;
+        std::thread watchDogThread;
+
     public:
         Scheduler(void (*_atSyncFunc)(void), uint32_t _parallelThreads, uint32_t _numCores, uint32_t _schedQuantum) :
-            atSyncFunc(_atSyncFunc), bar(_parallelThreads, this), numCores(_numCores), schedQuantum(_schedQuantum), rnd(0x5C73D9134)
+            atSyncFunc(_atSyncFunc), bar(_parallelThreads, this), numCores(_numCores), schedQuantum(_schedQuantum), rnd(0x5C73D9134),
+            schedInitialized(true), watchDogThread(threadTrampoline, this)
         {
             contexts.resize(numCores);
             for (uint32_t i = 0; i < numCores; i++) {
@@ -194,7 +200,8 @@ class Scheduler : public GlobAlloc, public Callee {
 
             info("Started RR scheduler, quantum=%d phases", schedQuantum);
             terminateWatchdogThread = false;
-            startWatchdogThread();
+
+            schedInitialized.store(false);
         }
 
         ~Scheduler() {}
@@ -828,10 +835,9 @@ class Scheduler : public GlobAlloc, public Callee {
          * Instead, we have an auxiliary thread check for this condition periodically, and if all threads are sleeping or blocked, we just drive time
          * forward.
          */
-        void startWatchdogThread();
         void watchdogThreadFunc();
 
-        static void threadTrampoline(void* arg);
+        static void threadTrampoline(Scheduler* arg);
 
     /* Accurate and adaptive join-leave
      *
