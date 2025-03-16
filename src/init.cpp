@@ -64,7 +64,6 @@
 #include "numa_map.h"
 #include "ooo_core.h"
 #include "part_repl_policies.h"
-#include "pin_cmd.h"
 #include "prefetcher.h"
 #include "proc_stats.h"
 #include "process_stats.h"
@@ -1421,8 +1420,6 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     //NOTE: Due to partitioning, must be done before initializing memory hierarchy
     CreateProcessTree(config);
     zinfo->procArray[0]->notifyStart(); //called here so that we can detect end-before-start races
-
-    zinfo->pinCmd = new PinCmd(&config, nullptr /*don't pass config file to children --- can go either way, it's optional*/, outputDir, shmid);
 
     //NUMA map
     InitNUMA(config);

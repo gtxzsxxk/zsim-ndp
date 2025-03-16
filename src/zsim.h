@@ -45,7 +45,6 @@ class EventQueue;
 class ContentionSim;
 class EventRecorder;
 class MemInterconnectEventRecorder;
-class PinCmd;
 class PortVirtualizer;
 class VectorCounter;
 class AccessTraceWriter;
@@ -156,8 +155,6 @@ struct GlobSimInfo {
     ProcExitStatus* procExited; //starts with all set to PROC_RUNNING, each process sets to PROC_EXITED or PROC_RESTARTME on exit. Used to detect untimely deaths (that don;t go thropugh SimEnd) in the harness and abort.
     uint32_t numProcs;
     uint32_t numProcGroups;
-
-    PinCmd* pinCmd; //enables calls to exec() to modify Pin's calling arguments, see zsim.cpp
 
     // If true, threads start as shadow and have no effect on simulation until they call the register magic op
     bool registerThreads;
