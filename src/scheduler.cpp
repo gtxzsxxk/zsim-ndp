@@ -24,6 +24,7 @@
  * this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <algorithm>
 #include "scheduler.h"
 #include <fstream>
 #include <regex.h>  // POSIX regex instead of C++11 regex
@@ -310,7 +311,7 @@ void Scheduler::notifyFutexWakeStart(uint32_t pid, uint32_t tid, uint32_t maxWak
     // Programs sometimes call FUTEX_WAIT with maxWakes = UINT_MAX to wake
     // everyone waiting on it; we cap to a reasonably high number to avoid
     // overflows on maxAllowedFutexWakeups
-    maxWakes = MIN(maxWakes, 1<<24 /*16M wakes*/);
+    maxWakes = std::min((unsigned long)maxWakes, 1UL<<24 /*16M wakes*/);
 
     maxAllowedFutexWakeups += maxWakes;
     th->futexJoin.maxWakes = maxWakes;

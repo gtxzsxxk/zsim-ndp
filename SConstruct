@@ -17,7 +17,7 @@ def buildSim(cppFlags, dir, type, pgo=None):
     versionFile = joinpath(buildDir, "version.h")
     if os.path.exists(".git"):
         env.Command(versionFile, allSrcs + [".git/index", "SConstruct"],
-            'printf "#define ZSIM_BUILDDATE \\"`date`\\"\\n#define ZSIM_BUILDVERSION \\"`python misc/gitver.py`\\"" >>' + versionFile)
+            'printf "#define ZSIM_BUILDDATE \\"`date`\\"\\n#define ZSIM_BUILDVERSION \\"`python3 misc/gitver.py`\\"" >>' + versionFile)
     else:
         env.Command(versionFile, allSrcs + ["SConstruct"],
             'printf "#define ZSIM_BUILDDATE \\"`date`\\"\\n#define ZSIM_BUILDVERSION \\"no git repo\\"" >>' + versionFile)

@@ -43,6 +43,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include "access_tracing.h"
+#include "config.h"
 #include "constants.h"
 #include "contention_sim.h"
 #include "core.h"
@@ -949,11 +950,11 @@ int main(int argc, char *argv[]) {
 
     info("Started instance");
 
-    //Decrease priority to avoid starving system processes (e.g. gluster)
-    //setpriority(PRIO_PROCESS, getpid(), 10);
-    //info("setpriority, new prio %d", getpriority(PRIO_PROCESS, getpid()));
-
-    gm_attach(0);
+    Config conf(configFile);
+    uint32_t gmSize = conf.get<uint32_t>("sim.gmMBytes", (1<<10) /*default 1024MB*/);
+    info("Creating global segment, %d MBs", gmSize);
+    int shmid = gm_init(((size_t)gmSize) << 20 /*MB to Bytes*/);
+    info("Global segment shmid = %d", shmid);
 
     bool masterProcess = false;
     if (procIdx == 0 && !gm_isready()) {  // process 0 can exec() without fork()ing first, so we must check gm_isready() to ensure we don't initialize twice
