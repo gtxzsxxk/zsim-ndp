@@ -848,33 +848,32 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
     std::vector<uint32_t> instrUops;
     std::vector<INS> instrDesc;
 
-    if (oooDecoding) {
-        //Decode BBL
-        uint32_t approxInstrs = 0;
-        DynUopVec uopVec;
+    //Decode BBL
+    uint32_t approxInstrs = 0;
+    DynUopVec uopVec;
+    //Decode
+    size_t instIndex = 0;
+    uint8_t instLength = 0;
+    for (INS ins = bbl.getHeadInstruction(&instIndex, &instLength); !bbl.endOfBlock();
+            ins = bbl.getHeadInstruction(&instIndex, &instLength)) {
+        bool inaccurate = false;
+        uint32_t prevUops = uopVec.size();
+        inaccurate = Decoder::decodeInstr(ins, uopVec);
 
-        //Decode
-        size_t instIndex = 0;
-        uint8_t instLength = 0;
-        for (INS ins = bbl.getHeadInstruction(&instIndex, &instLength); bbl.endOfBlock();
-                ins = bbl.getHeadInstruction(&instIndex, &instLength)) {
-            bool inaccurate = false;
-            uint32_t prevUops = uopVec.size();
-            inaccurate = Decoder::decodeInstr(ins, uopVec);
+        instrAddr.push_back(bbl.startAddress + instIndex);
+        instrBytes.push_back(instLength);
+        instrUops.push_back(uopVec.size() - prevUops);
+        instrDesc.push_back(ins);
 
-            instrAddr.push_back(bbl.startAddress + instIndex);
-            instrBytes.push_back(instLength);
-            instrUops.push_back(uopVec.size() - prevUops);
-            instrDesc.push_back(ins);
-
-            if (inaccurate) {
-                approxInstrs++;
-            }
-            if (Decoder::canFuse(ins)) {
-                break;
-            }
+        if (inaccurate) {
+            approxInstrs++;
         }
+        if (Decoder::canFuse(ins)) {
+            break;
+        }
+    }
 
+    if (oooDecoding) {
         //Instr predecoder and decode stage modeling; we assume clean slate between BBLs, which is typical because
         //optimizing compilers 16B-align most branch targets (and if it doesn't happen, the error introduced is fairly small)
 
