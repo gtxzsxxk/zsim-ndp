@@ -550,12 +550,19 @@ void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *l
     // }
 }
 
+static uint64_t nextBBLAddressPerThread[MAX_THREADS] = {0};
 
 void Trace(THREADID tid, struct FrontendTrace trace) {
     if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
         // Visit every basic block in the trace
         for (size_t i = 0; i < trace.count; i++) {
             struct BasicBlock &bbl = trace.blocks[i];
+            if (nextBBLAddressPerThread[tid]) {
+                assert(nextBBLAddressPerThread[tid] == bbl.startAddress);
+            }
+            auto expectNextBBLAddr = bbl.branchInfo.branchTaken ?
+                bbl.branchInfo.branchTakenNpc : bbl.branchInfo.branchNotTakenNpc;
+            nextBBLAddressPerThread[tid] = expectNextBBLAddr;
             BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
             IndirectBasicBlock(tid, bbl.startAddress, bblInfo);
         }
