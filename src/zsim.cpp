@@ -922,6 +922,51 @@ void FFThread(void* arg) {
     panic("Should not be reached!");
 }
 
+/* linux kernel memset */
+static uint32_t bbl0_code[] = {
+    0x00c286b3, 0x00b28023, 0xede30285, 0x0000fed2
+};
+
+static struct BasicBlock bbl0, bbl1;
+static struct FrontendTrace testTrace0, testTrace1;
+
+void buildTestTrace() {
+    bbl0.codeBytes = 14;
+    bbl0.code = (uint8_t *) bbl0_code;
+    bbl0.loadStore = (struct BasicBlockLoadStore *)malloc(4 * sizeof(struct BasicBlockLoadStore));
+    bbl0.branchInfo.branchPc = 0xffffffff8090f17a;
+    bbl0.branchInfo.branchTaken = true;
+    bbl0.branchInfo.branchTakenNpc = 0xffffffff8090f174;
+    bbl0.branchInfo.branchNotTakenNpc = 0xffffffff8090f17e;
+    bbl0.startAddress = 0xffffffff8090f170;
+    bbl0.resetProgramIndex();
+    bbl0.loadStore[0].entryValid = false;
+    bbl0.loadStore[1].entryValid = true;
+    bbl0.loadStore[1].address = 0xffffffff8190f170;
+    bbl0.loadStore[1].next = nullptr;
+    bbl0.loadStore[2].entryValid = false;
+    bbl0.loadStore[3].entryValid = false;
+    testTrace0.blocks = &bbl0;
+    testTrace0.count = 1;
+
+    bbl1.codeBytes = 10;
+    bbl1.code = (uint8_t *) (bbl0_code) + 4;
+    bbl1.loadStore = (struct BasicBlockLoadStore *)malloc(3 * sizeof(struct BasicBlockLoadStore));
+    bbl1.branchInfo.branchPc = 0xffffffff8090f17a;
+    bbl1.branchInfo.branchTaken = true;
+    bbl1.branchInfo.branchTakenNpc = 0xffffffff8090f174;
+    bbl1.branchInfo.branchNotTakenNpc = 0xffffffff8090f17e;
+    bbl1.startAddress = 0xffffffff8090f174;
+    bbl1.resetProgramIndex();
+    bbl1.loadStore[0].entryValid = true;
+    bbl1.loadStore[0].address = 0x8190fa70; /* force a cache miss */
+    bbl1.loadStore[0].next = nullptr;
+    bbl1.loadStore[1].entryValid = false;
+    bbl1.loadStore[2].entryValid = false;
+    testTrace1.blocks = &bbl1;
+    testTrace1.count = 1;
+}
+
 /* ===================================================================== */
 
 int main(int argc, char *argv[]) {
