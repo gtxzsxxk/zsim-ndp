@@ -28,6 +28,7 @@
 
 #include "zsim.h"
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <signal.h>
 #include <dlfcn.h>
@@ -41,6 +42,7 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <thread>
 #include <unistd.h>
 #include "access_tracing.h"
 #include "config.h"
@@ -563,7 +565,7 @@ void Trace(THREADID tid, struct FrontendTrace trace) {
         struct BasicBlock &bbl = trace.blocks[i];
         bbl.resetProgramIndex();
         size_t instIndex = 0;
-        for (INS ins = bbl.getHeadInstruction(); bbl.endOfBlock();
+        for (INS ins = bbl.getHeadInstruction(); !bbl.endOfBlock();
                 ins = bbl.getHeadInstruction(), instIndex++) {
             PrepareNextInstruction(tid, ins, &bbl.loadStore[instIndex], &bbl.branchInfo);
         }
