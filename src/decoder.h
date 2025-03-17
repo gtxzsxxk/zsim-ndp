@@ -94,13 +94,7 @@ struct BblInfo {
 
 #define MAX_UOPS_PER_INSTR 12  // technically, even full decoders produce 1-4 uops; we increase this for common microsequenced instructions (e.g. xchg).
 
-/* Temporary register offsets */
-#define REG_LOAD_TEMP (REG_LAST + 1)  // REG_LAST defined by PIN
-#define REG_STORE_TEMP (REG_LOAD_TEMP + MAX_INSTR_LOADS)
-#define REG_STORE_ADDR_TEMP (REG_STORE_TEMP + MAX_INSTR_STORES)
-#define REG_EXEC_TEMP (REG_STORE_ADDR_TEMP + MAX_INSTR_STORES)
-
-#define MAX_REGISTERS (REG_EXEC_TEMP + 64)
+#define MAX_REGISTERS 32
 
 typedef std::vector<DynUop> DynUopVec;
 
