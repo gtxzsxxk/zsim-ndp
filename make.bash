@@ -2,4 +2,4 @@
 
 export LIBCONFIGPATH=$HOME/.local
 export HDF5PATH=$HOME/.local
-bear -- scons -j64
+bear -- scons --d -j64
