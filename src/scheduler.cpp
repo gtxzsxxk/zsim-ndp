@@ -31,7 +31,6 @@
 #include "process_tree.h"
 #include "profile_stats.h"
 #include "str.h"
-#include "virt/syscall_name.h"
 
 //The scheduler class started simple, but at some point having it all in the header is too ridiculous. Migrate non perf-intensive calls here! (all but sync, really)
 

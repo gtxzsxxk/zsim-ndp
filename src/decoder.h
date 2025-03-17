@@ -78,7 +78,11 @@ struct DynBbl {
     }
 };
 
-struct BblInfo;  // defined in core.h
+struct BblInfo {
+    uint32_t instrs;
+    uint32_t bytes;
+    DynBbl oooBbl[0]; //0 bytes, but will be 1-sized when we have an element (and that element has variable size as well)
+};
 
 /* These are absolute maximums per instruction. If there is some non-conforming instruction, either increase these limits or
  * treat it as a special case.

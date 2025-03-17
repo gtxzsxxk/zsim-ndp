@@ -888,7 +888,6 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
         ADDRINT startAddr = bbl.startAddress & ~0xfUL;
 
         for (uint32_t i = 0; i < instrDesc.size(); i++) {
-            INS ins = instrDesc[i];
             ADDRINT addr = instrAddr[i];
             uint32_t bytes = instrBytes[i];
             uint32_t block = (addr - startAddr) >> 4;

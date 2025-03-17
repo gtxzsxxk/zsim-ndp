@@ -1,6 +1,7 @@
 #ifndef INTERVAL_RECORDER_H_
 #define INTERVAL_RECORDER_H_
 
+#include <cstdint>
 #include "galloc.h"
 #include "intrusive_list.h"
 

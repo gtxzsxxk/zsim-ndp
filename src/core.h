@@ -99,11 +99,7 @@ struct FrontendTrace {
     size_t count;
 };
 
-struct BblInfo {
-    uint32_t instrs;
-    uint32_t bytes;
-    DynBbl oooBbl[0]; //0 bytes, but will be 1-sized when we have an element (and that element has variable size as well)
-};
+struct BblInfo;
 
 /* Analysis function pointer struct
  * As an artifact of having a shared code cache, we need these to be the same for different core types.
