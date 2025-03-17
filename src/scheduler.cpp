@@ -121,11 +121,12 @@ void Scheduler::watchdogThreadFunc() {
 
         if (lastPhase == curPhase && !fakeLeaves.empty() && (fakeLeaves.front()->th->futexJoin.action != FJA_WAKE)) {
             if (++fakeLeaveStalls >= WATCHDOG_STALL_THRESHOLD) {
+                assert(false);
                 info("Detected possible stall due to fake leaves (%ld current)", fakeLeaves.size());
                 // Uncomment to print all leaves
                 FakeLeaveInfo* pfl = fakeLeaves.front();
                 while (pfl) {
-                    info(" [%d/%d] %s (%d) @ 0x%lx", getPid(pfl->th->gid), getTid(pfl->th->gid), GetSyscallName(pfl->syscallNumber), pfl->syscallNumber, pfl->pc);
+                    info(" [%d/%d] %s (%d) @ 0x%lx", getPid(pfl->th->gid), getTid(pfl->th->gid), "GetSyscallName(pfl->syscallNumber)", pfl->syscallNumber, pfl->pc);
                     pfl = pfl->next;
                 }
 
@@ -140,13 +141,13 @@ void Scheduler::watchdogThreadFunc() {
                 regex_t sbRegex;
                 if (regcomp(&sbRegex, sbRegexStr.c_str(), REG_EXTENDED | REG_NOSUB))
                     panic("Scheduler fails to compile syscall blacklist regex (%s)", sbRegexStr.c_str());
-                if (regexec(&sbRegex, GetSyscallName(fl->syscallNumber), 0, nullptr, 0) == 0) {
+                if (regexec(&sbRegex, "GetSyscallName(fl->syscallNumber)", 0, nullptr, 0) == 0) {
                     // If this is the last leave we catch, it is the culprit for sure -> blacklist it
                     // Over time, this will blacklist every blocking syscall
                     // The root reason for being conservative though is that we don't have a sure-fire
                     // way to distinguish IO waits from truly blocking syscalls (TODO)
                     if (fakeLeaves.size() == 1) {
-                        info("Blacklisting from future fake leaves: [%d] %s @ 0x%lx | arg0 0x%lx arg1 0x%lx", pid, GetSyscallName(fl->syscallNumber), fl->pc, fl->arg0, fl->arg1);
+                        info("Blacklisting from future fake leaves: [%d] %s @ 0x%lx | arg0 0x%lx arg1 0x%lx", pid, "GetSyscallName(fl->syscallNumber)", fl->pc, fl->arg0, fl->arg1);
                         blockingSyscalls[pid].insert(fl->pc);
                     }
 
@@ -176,7 +177,7 @@ void Scheduler::watchdogThreadFunc() {
                     } while (fakeLeaves.size() > 8);
                 } else {
                     info("Skipping, [%d] %s @ 0x%lx | arg0 0x%lx arg1 0x%lx does not match blacklist regex (%s)",
-                            pid, GetSyscallName(fl->syscallNumber), fl->pc, fl->arg0, fl->arg1, sbRegexStr.c_str());
+                            pid, "GetSyscallName(fl->syscallNumber)", fl->pc, fl->arg0, fl->arg1, sbRegexStr.c_str());
                 }
                 fakeLeaveStalls = 0;
             }

@@ -125,7 +125,6 @@ struct GlobSimInfo {
     PAD();
 
     ClockDomainInfo clockDomainInfo[MAX_CLOCK_DOMAINS];
-    PortVirtualizer* portVirt[MAX_PORT_DOMAINS];
 
     lock_t ffLock; //global, grabbed in all ff entry/exit ops.
 
@@ -168,8 +167,6 @@ struct GlobSimInfo {
     bool attachDebugger;
     int harnessPid; //used for debugging purposes
     int debugPortId;
-
-    struct LibInfo libzsimAddrs;
 
     bool ffReinstrument; //true if we should reinstrument on ffwd, works fine with ST apps and it's faster since we run with basically no instrumentation, but it's not precise with MT apps
 

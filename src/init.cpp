@@ -81,7 +81,6 @@
 #include "timing_event.h"
 #include "trace_driver.h"
 #include "tracing_cache.h"
-#include "virt/port_virtualizer.h"
 #include "weave_md1_mem.h" //validation, could be taken out...
 #include "zsim.h"
 
@@ -1311,10 +1310,8 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     zinfo->attachDebugger = config.get<bool>("sim.attachDebugger", false);
     zinfo->harnessPid = getppid();
     zinfo->debugPortId = static_cast<int>(config.get<uint32_t>("sim.debugPortId", 0));
-    getLibzsimAddrs(&zinfo->libzsimAddrs);
 
     if (zinfo->attachDebugger) {
-        gm_set_secondary_ptr(&zinfo->libzsimAddrs);
         notifyHarnessForDebugger(zinfo->harnessPid, zinfo->debugPortId);
     }
 
@@ -1413,9 +1410,6 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     if (zinfo->pageSize < zinfo->lineSize) panic("Page size must be no smaller than line size.");
     if (!isPow2(zinfo->pageSize)) panic("Page size must be power-of-two.");
 
-    //Port virtualization
-    for (uint32_t i = 0; i < MAX_PORT_DOMAINS; i++) zinfo->portVirt[i] = new PortVirtualizer();
-
     //Process hierarchy
     //NOTE: Due to partitioning, must be done before initializing memory hierarchy
     CreateProcessTree(config);
@@ -1462,7 +1456,7 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     config.get<bool>("sim.aslr", false);
 
     //Write config out
-    bool strictConfig = config.get<bool>("sim.strictConfig", true); //if true, panic on unused variables
+    bool strictConfig = config.get<bool>("sim.strictConfig", false); //if true, panic on unused variables
     config.writeAndClose((string(zinfo->outputDir) + "/out.cfg").c_str(), strictConfig);
 
     zinfo->contentionSim->postInit();

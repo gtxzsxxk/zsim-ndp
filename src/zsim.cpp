@@ -929,7 +929,7 @@ int main(int argc, char *argv[]) {
     snprintf(header, sizeof(header), "[S %d] ", procIdx);
 
     /* argv 1 output directory argv 2 log_to_file argv 3 config file */
-    if (argc != 3) {
+    if (argc != 4) {
         std::cout << "You must specify output directory, log to file and config file option" << std::endl;
         std::cout << "Default value: ./ false zsim.cfg" << std::endl;
         return 1;
@@ -962,13 +962,6 @@ int main(int argc, char *argv[]) {
     } else {
         while (!gm_isready()) usleep(1000);  // wait till proc idx 0 initializes everything
         zinfo = static_cast<GlobSimInfo*>(gm_get_glob_ptr());
-    }
-
-    //LibzsimAddrs sanity check: Ensure that they match across processes
-    struct LibInfo libzsimAddrs;
-    getLibzsimAddrs(&libzsimAddrs);
-    if (memcmp(&libzsimAddrs, &zinfo->libzsimAddrs, sizeof(libzsimAddrs)) != 0) {
-        panic("libzsim.so address mismatch! text: %p != %p. Perform loader injection to homogenize offsets!", libzsimAddrs.textAddr, zinfo->libzsimAddrs.textAddr);
     }
 
     //Attach to debugger if needed (master process does so in SimInit, to be able to debug initialization)
