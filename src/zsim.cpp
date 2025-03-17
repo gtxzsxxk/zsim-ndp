@@ -573,13 +573,13 @@ void Trace(THREADID tid, struct FrontendTrace trace) {
 /* ===================================================================== */
 
 
-bool activeThreads[MAX_THREADS];  // set in ThreadStart, reset in ThreadFini, we need this for exec() (see FollowChild)
+static std::atomic<bool> activeThreads[MAX_THREADS];  // set in ThreadStart, reset in ThreadFini, we need this for exec() (see FollowChild)
 
 void SimThreadStart(THREADID tid) {
     info("Thread %d starting", tid);
     if (tid > MAX_THREADS) panic("tid > MAX_THREADS");
     zinfo->sched->start(procIdx, tid, procTreeNode->getMask());
-    activeThreads[tid] = true;
+    activeThreads[tid].store(true);
 
     //Pinning
 #if 0
@@ -630,8 +630,19 @@ void ThreadStart(THREADID tid) {
 void SimThreadFini(THREADID tid) {
     // zinfo->sched->leave(); //exit syscall (SyscallEnter) already leaves
     zinfo->sched->finish(procIdx, tid);
-    activeThreads[tid] = false;
+    activeThreads[tid].store(false);
     cids[tid] = UNINITIALIZED_CID; //clear this cid, it might get reused
+}
+
+void ThreadFini(THREADID tid) {
+    //NOTE: Thread has no valid cid here!
+    if (fPtrs[tid].type == FPTR_NOP) {
+        info("Shadow/NOP thread %d finished", tid);
+        return;
+    } else {
+        SimThreadFini(tid);
+        info("Thread %d finished", tid);
+    }
 }
 
 /* Fork and exec instrumentation */
@@ -1046,6 +1057,26 @@ int main(int argc, char *argv[]) {
     if (zinfo->sched) zinfo->sched->processCleanup(procIdx);
 
     FFIInit();
+
+    std::vector<std::thread> threads;
+    threads.emplace_back(FFThread, nullptr);
+    threads.emplace_back(ThreadStart, 0);
+
+    buildTestTrace();
+    while (!activeThreads[0].load());
+    Trace(0, testTrace0);
+    Trace(0, testTrace1);
+
+    EndOfPhaseActions();
+    SimEnd();
+
+    int joinCounter = 0;
+    for (auto &it: threads) {
+        it.join();
+        if ((joinCounter++) > 0) {
+            ThreadFini(joinCounter - 1);
+        }
+    }
 
     return 0;
 }
