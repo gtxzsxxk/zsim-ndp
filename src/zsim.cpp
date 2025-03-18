@@ -29,6 +29,7 @@
 #include "zsim.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <signal.h>
 #include <dlfcn.h>
@@ -43,6 +44,10 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <thread>
+#include <queue>
+#include <memory>
+#include <mutex>
+#include <condition_variable>
 #include <unistd.h>
 #include "access_tracing.h"
 #include "config.h"
@@ -550,39 +555,38 @@ void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *l
     // }
 }
 
+static std::atomic<bool> activeThreads[MAX_THREADS];  // set in ThreadStart, reset in ThreadFini, we need this for exec() (see FollowChild)
 static uint64_t nextBBLAddressPerThread[MAX_THREADS] = {0};
+static std::vector<std::queue<struct FrontendTrace>> queuePerThread;
+static std::vector<std::unique_ptr<std::mutex>> queueMutexPerThread;
+
+/* only for trace tests */
+static std::vector<std::unique_ptr<std::condition_variable>> queueHasDataPerThread;
+
+void ThreadStart(THREADID tid);
+
+void TraceThreadInit(std::vector<std::thread> &threads, int which) {
+    queuePerThread.emplace_back();
+
+    auto mutexPtr = std::make_unique<std::mutex>();
+    queueMutexPerThread.push_back(std::move(mutexPtr));
+
+    auto cvPtr = std::make_unique<std::condition_variable>();
+    queueHasDataPerThread.push_back(std::move(cvPtr));
+
+    threads.emplace_back(ThreadStart, which);
+    while (!activeThreads[0].load());
+}
 
 void Trace(THREADID tid, struct FrontendTrace trace) {
-    if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
-        // Visit every basic block in the trace
-        for (size_t i = 0; i < trace.count; i++) {
-            struct BasicBlock &bbl = trace.blocks[i];
-            if (nextBBLAddressPerThread[tid]) {
-                assert(nextBBLAddressPerThread[tid] == bbl.startAddress);
-            }
-            auto expectNextBBLAddr = bbl.branchInfo.branchTaken ?
-                bbl.branchInfo.branchTakenNpc : bbl.branchInfo.branchNotTakenNpc;
-            nextBBLAddressPerThread[tid] = expectNextBBLAddr;
-            BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
-            IndirectBasicBlock(tid, bbl.startAddress, bblInfo);
-        }
+    {
+        std::unique_lock<std::mutex> lock(*queueMutexPerThread[tid]);
+        queuePerThread[tid].push(trace);
     }
-
-    for (size_t i = 0; i < trace.count; i++) {
-        struct BasicBlock &bbl = trace.blocks[i];
-        bbl.resetProgramIndex();
-        size_t instIndex = 0;
-        for (INS ins = bbl.getHeadInstruction(); !bbl.endOfBlock();
-                ins = bbl.getHeadInstruction(), instIndex++) {
-            PrepareNextInstruction(tid, ins, &bbl.loadStore[instIndex], &bbl.branchInfo);
-        }
-    }
+    queueHasDataPerThread[tid]->notify_one();
 }
 
 /* ===================================================================== */
-
-
-static std::atomic<bool> activeThreads[MAX_THREADS];  // set in ThreadStart, reset in ThreadFini, we need this for exec() (see FollowChild)
 
 void SimThreadStart(THREADID tid) {
     info("Thread %d starting", tid);
@@ -634,12 +638,53 @@ void ThreadStart(THREADID tid) {
         //Start normal thread
         SimThreadStart(tid);
     }
+
+    while (true) {
+        std::unique_lock<std::mutex> lock(*queueMutexPerThread[tid]);
+        queueHasDataPerThread[tid]->wait(lock, [tid] {
+            return !queuePerThread[tid].empty() || !activeThreads[tid].load();
+        });
+        if (!activeThreads[tid].load()) {
+            break;
+        }
+        while (!queuePerThread[tid].empty()) {
+            auto trace = queuePerThread[tid].front();
+            queuePerThread[tid].pop();
+            if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
+                // Visit every basic block in the trace
+                for (size_t i = 0; i < trace.count; i++) {
+                    struct BasicBlock &bbl = trace.blocks[i];
+                    if (nextBBLAddressPerThread[tid]) {
+                        assert(nextBBLAddressPerThread[tid] == bbl.startAddress);
+                    }
+                    auto expectNextBBLAddr = bbl.branchInfo.branchTaken ?
+                        bbl.branchInfo.branchTakenNpc : bbl.branchInfo.branchNotTakenNpc;
+                    nextBBLAddressPerThread[tid] = expectNextBBLAddr;
+                    BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
+                    IndirectBasicBlock(tid, bbl.startAddress, bblInfo);
+                }
+            }
+        
+            for (size_t i = 0; i < trace.count; i++) {
+                struct BasicBlock &bbl = trace.blocks[i];
+                bbl.resetProgramIndex();
+                size_t instIndex = 0;
+                for (INS ins = bbl.getHeadInstruction(); !bbl.endOfBlock();
+                        ins = bbl.getHeadInstruction(), instIndex++) {
+                    PrepareNextInstruction(tid, ins, &bbl.loadStore[instIndex], &bbl.branchInfo);
+                }
+            }
+        }
+    }
 }
 
 void SimThreadFini(THREADID tid) {
-    // zinfo->sched->leave(); //exit syscall (SyscallEnter) already leaves
-    zinfo->sched->finish(procIdx, tid);
+    while (!queuePerThread[tid].empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     activeThreads[tid].store(false);
+    queueHasDataPerThread[tid]->notify_one();
+    zinfo->sched->finish(procIdx, tid);
     cids[tid] = UNINITIALIZED_CID; //clear this cid, it might get reused
 }
 
@@ -1069,24 +1114,31 @@ int main(int argc, char *argv[]) {
 
     std::vector<std::thread> threads;
     threads.emplace_back(FFThread, nullptr);
-    threads.emplace_back(ThreadStart, 0);
+
+    TraceThreadInit(threads, 0);
 
     buildTestTrace();
-    while (!activeThreads[0].load());
     Trace(0, testTrace0);
     Trace(0, testTrace1);
-
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
+    Trace(0, testTrace1);
     EndOfPhaseActions();
+
+    ThreadFini(0);
     SimEnd();
-
-    int joinCounter = 0;
-    for (auto &it: threads) {
-        it.join();
-        if ((joinCounter++) > 0) {
-            ThreadFini(joinCounter - 1);
-        }
-    }
-
     return 0;
 }
 
