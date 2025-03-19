@@ -89,14 +89,41 @@ struct BasicBlock {
         }
     }
 
+    size_t getInstructionCount() {
+        size_t ret = 0;
+        for (getHeadInstruction(); !endOfBlock(); getHeadInstruction()) {
+            ret++;
+        }
+        resetProgramIndex();
+        return ret;
+    }
+
     bool endOfBlock() {
         return programIndex > codeBytes;
+    }
+
+    ~BasicBlock() {
+        auto instCount = getInstructionCount();
+        delete[] code;
+        for (size_t i = 0; i < instCount; i++) {
+            auto next = loadStore[i].next;
+            while (next) {
+                auto cur = next;
+                next = next->next;
+                delete[] cur;
+            }
+        }
+        delete[] loadStore;
     }
 };
 
 struct FrontendTrace {
     struct BasicBlock *blocks;
     size_t count;
+
+    ~FrontendTrace() {
+        delete[] blocks;
+    }
 };
 
 struct BblInfo;
