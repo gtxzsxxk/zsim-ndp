@@ -61,6 +61,7 @@
 #include "event_queue.h"
 #include "galloc.h"
 #include "init.h"
+#include "ipc_handler.h"
 #include "log.h"
 #include "process_tree.h"
 #include "profile_stats.h"
@@ -557,15 +558,16 @@ void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *l
 
 static std::atomic<bool> activeThreads[MAX_THREADS];  // set in ThreadStart, reset in ThreadFini, we need this for exec() (see FollowChild)
 static uint64_t nextBBLAddressPerThread[MAX_THREADS] = {0};
+#ifdef HARD_CODED_TRACE_TEST
 static std::vector<std::queue<struct FrontendTrace>> queuePerThread;
 static std::vector<std::unique_ptr<std::mutex>> queueMutexPerThread;
-
-/* only for trace tests */
 static std::vector<std::unique_ptr<std::condition_variable>> queueHasDataPerThread;
+#endif
 
 void ThreadStart(THREADID tid);
 
 void TraceThreadInit(std::vector<std::thread> &threads, int which) {
+#ifdef HARD_CODED_TRACE_TEST
     queuePerThread.emplace_back();
 
     auto mutexPtr = std::make_unique<std::mutex>();
@@ -573,11 +575,12 @@ void TraceThreadInit(std::vector<std::thread> &threads, int which) {
 
     auto cvPtr = std::make_unique<std::condition_variable>();
     queueHasDataPerThread.push_back(std::move(cvPtr));
-
+#endif
     threads.emplace_back(ThreadStart, which);
     while (!activeThreads[0].load());
 }
 
+#ifdef HARD_CODED_TRACE_TEST
 void Trace(THREADID tid, struct FrontendTrace trace) {
     {
         std::unique_lock<std::mutex> lock(*queueMutexPerThread[tid]);
@@ -585,6 +588,7 @@ void Trace(THREADID tid, struct FrontendTrace trace) {
     }
     queueHasDataPerThread[tid]->notify_one();
 }
+#endif
 
 /* ===================================================================== */
 
@@ -615,6 +619,8 @@ void SimThreadStart(THREADID tid) {
 }
 
 void ThreadStart(THREADID tid) {
+    IPCHandler ipcHandler(tid);
+
     /* This should only fire for the first thread; I know this is a callback,
      * everything is serialized etc; that's the point, we block everything.
      * It's here and not in main() because that way the auxiliary threads can
@@ -639,17 +645,26 @@ void ThreadStart(THREADID tid) {
         SimThreadStart(tid);
     }
 
+    ipcHandler.waitAccept();
+
     while (true) {
+#ifdef HARD_CODED_TRACE_TEST
         std::unique_lock<std::mutex> lock(*queueMutexPerThread[tid]);
         queueHasDataPerThread[tid]->wait(lock, [tid] {
             return !queuePerThread[tid].empty() || !activeThreads[tid].load();
         });
+#endif
         if (!activeThreads[tid].load()) {
             break;
         }
+#ifdef HARD_CODED_TRACE_TEST
         while (!queuePerThread[tid].empty()) {
             auto trace = queuePerThread[tid].front();
             queuePerThread[tid].pop();
+#else
+        auto tracePtr = ipcHandler.receiveTrace();
+        auto &trace = *tracePtr;
+#endif
             if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
                 // Visit every basic block in the trace
                 for (size_t i = 0; i < trace.count; i++) {
@@ -674,16 +689,22 @@ void ThreadStart(THREADID tid) {
                     PrepareNextInstruction(tid, ins, &bbl.loadStore[instIndex], &bbl.branchInfo);
                 }
             }
+#ifdef HARD_CODED_TRACE_TEST
         }
+#endif
     }
 }
 
 void SimThreadFini(THREADID tid) {
+#ifdef HARD_CODED_TRACE_TEST
     while (!queuePerThread[tid].empty()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+#endif
     activeThreads[tid].store(false);
+#ifdef HARD_CODED_TRACE_TEST
     queueHasDataPerThread[tid]->notify_one();
+#endif
     zinfo->sched->finish(procIdx, tid);
     cids[tid] = UNINITIALIZED_CID; //clear this cid, it might get reused
 }
@@ -1117,6 +1138,7 @@ int main(int argc, char *argv[]) {
 
     TraceThreadInit(threads, 0);
 
+#ifdef HARD_CODED_TRACE_TEST
     buildTestTrace();
     Trace(0, testTrace0);
     Trace(0, testTrace1);
@@ -1136,7 +1158,11 @@ int main(int argc, char *argv[]) {
     Trace(0, testTrace1);
     Trace(0, testTrace1);
     EndOfPhaseActions();
-
+#else
+    for (auto &thd: threads) {
+        thd.join();
+    }
+#endif
     ThreadFini(0);
     SimEnd();
     return 0;
