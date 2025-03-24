@@ -52,6 +52,7 @@ struct BasicBlockLoadStore {
 struct BasicBlock {
     size_t codeBytes;
     uint8_t *code;
+    size_t loadStores;
     struct BasicBlockLoadStore *loadStore;
     struct BranchInformation branchInfo;
     uint64_t virtualPc;
@@ -93,6 +94,7 @@ struct BasicBlock {
 
     size_t getInstructionCount() {
         size_t ret = 0;
+        resetProgramIndex();
         for (getHeadInstruction(); !endOfBlock(); getHeadInstruction()) {
             ret++;
         }
@@ -105,9 +107,8 @@ struct BasicBlock {
     }
 
     ~BasicBlock() {
-        auto instCount = getInstructionCount();
         delete[] code;
-        for (size_t i = 0; i < instCount; i++) {
+        for (size_t i = 0; i < loadStores; i++) {
             auto next = loadStore[i].next;
             while (next) {
                 auto cur = next;
