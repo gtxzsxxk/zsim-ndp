@@ -673,12 +673,6 @@ void ThreadStart(THREADID tid) {
                 // Visit every basic block in the trace
                 for (size_t i = 0; i < trace.count; i++) {
                     struct BasicBlock &bbl = trace.blocks[i];
-                    if (nextBBLAddressPerThread[tid]) {
-                        assert(nextBBLAddressPerThread[tid] == bbl.startAddress);
-                    }
-                    auto expectNextBBLAddr = bbl.branchInfo.branchTaken ?
-                        bbl.branchInfo.branchTakenNpc : bbl.branchInfo.branchNotTakenNpc;
-                    nextBBLAddressPerThread[tid] = expectNextBBLAddr;
                     BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
                     IndirectBasicBlock(tid, bbl.virtualPc, bblInfo);
                 }
