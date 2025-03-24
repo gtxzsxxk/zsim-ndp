@@ -7,7 +7,17 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-IPCHandler::IPCHandler(THREADID tid) {
+#define panicAndEnd(args...) \
+{ \
+    fprintf(logFdErr, "%sPanic on %s:%d: ", logHeader, __FILE__, __LINE__); \
+    fprintf(logFdErr, args); \
+    fprintf(logFdErr, "\n"); \
+    fflush(logFdErr); \
+    *endOfThread = true; \
+    return nullptr; \
+}
+
+IPCHandler::IPCHandler(THREADID tid): thread_id(tid) {
     std::stringstream ss;
     ss << SOCKET_PATH << "trace_in_uds_" << tid;
     socketPath = ss.str();
@@ -64,23 +74,28 @@ size_t IPCHandler::readExactBytes(int fd, void *buffer, size_t size) {
     return recv;
 }
 
-void *IPCHandler::readData(enum TraceDataType dataType, void *buffer) {
+void *IPCHandler::readData(bool *endOfThread, enum TraceDataType dataType, void *buffer) {
     uint32_t expectSize;
     if (readExactBytes(clientFd, &expectSize, sizeof(expectSize)) <= 0) {
-        panic("Cannot receive data size");
+        panicAndEnd("Cannot receive data size");
     }
     uint32_t actualDataType;
     if (readExactBytes(clientFd, &actualDataType, sizeof(actualDataType)) <= 0) {
-        panic("Cannot receive data type");
+        panicAndEnd("Cannot receive data type");
     }
     if ((uint32_t) dataType != actualDataType) {
-        panic("Cannot resolve packet");
+        panicAndEnd("Cannot resolve packet");
     }
+    char *buf__ = nullptr;
     if (!buffer) {
         buffer = new char[expectSize];
+        buf__ = (char *)buffer;
     }
     if (readExactBytes(clientFd, buffer, expectSize) <= 0) {
-        panic("Cannot resolve packet body");
+        if (buf__) {
+            delete[] buf__;
+        }
+        panicAndEnd("Cannot resolve packet body");
     }
     return buffer;
 }
@@ -88,22 +103,37 @@ void *IPCHandler::readData(enum TraceDataType dataType, void *buffer) {
 /*
  * packet format: size(word) type(word) data
  */
- std::unique_ptr<struct FrontendTrace> IPCHandler::receiveTrace() {
-    auto frontendTrace = std::unique_ptr<struct FrontendTrace>((struct FrontendTrace *)readData(TRACE_DATA_START_TRACE));
+struct FrontendTrace *IPCHandler::receiveTrace() {
+    bool needEnd = false;
+    auto frontendTrace = (struct FrontendTrace *)readData(&needEnd, TRACE_DATA_START_TRACE);
+    if (needEnd) {
+        return nullptr;
+    }
     frontendTrace->blocks = new struct BasicBlock[frontendTrace->count];
     for (size_t i = 0; i < frontendTrace->count; i++) {
-        readData(TRACE_DATA_BASIC_BLOCK, (void *) &frontendTrace->blocks[i]);
+        readData(&needEnd, TRACE_DATA_BASIC_BLOCK, (void *) &frontendTrace->blocks[i]);
+        if (needEnd) {
+            return nullptr;
+        }
         /* receive basic block data */
         /* receive code */
-        frontendTrace->blocks[i].code = reinterpret_cast<uint8_t *>(readData(TRACE_DATA_CODE));
+        frontendTrace->blocks[i].code = reinterpret_cast<uint8_t *>(readData(&needEnd, TRACE_DATA_CODE));
+        if (needEnd) {
+            return nullptr;
+        }
         /* receive load and store */
-        auto instCount = frontendTrace->blocks[i].getInstructionCount();
-        frontendTrace->blocks[i].loadStore = new struct BasicBlockLoadStore[instCount];
-        for (size_t j = 0; j < instCount; j++) {
-            readData(TRACE_DATA_LOAD_STORE, &frontendTrace->blocks[i].loadStore[j]);
+        frontendTrace->blocks[i].loadStore = new struct BasicBlockLoadStore[frontendTrace->blocks[i].loadStores];
+        for (size_t j = 0; j < frontendTrace->blocks[i].loadStores; j++) {
+            readData(&needEnd, TRACE_DATA_LOAD_STORE, &frontendTrace->blocks[i].loadStore[j]);
+            if (needEnd) {
+                return nullptr;
+            }
             auto next = &frontendTrace->blocks[i].loadStore[j].next;
             while (*next) {
-                *next = reinterpret_cast<struct BasicBlockLoadStore *>(readData(TRACE_DATA_LOAD_STORE));
+                *next = reinterpret_cast<struct BasicBlockLoadStore *>(readData(&needEnd, TRACE_DATA_LOAD_STORE));
+                if (needEnd) {
+                    return nullptr;
+                }
                 next = &((*next)->next);
             }
         }

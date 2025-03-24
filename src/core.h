@@ -124,6 +124,8 @@ struct FrontendTrace {
     struct BasicBlock *blocks;
     size_t count;
 
+    FrontendTrace() = default;
+
     ~FrontendTrace() {
         delete[] blocks;
     }

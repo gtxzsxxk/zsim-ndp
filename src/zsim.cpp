@@ -622,6 +622,17 @@ void SimThreadStart(THREADID tid) {
     clearCid(tid); //just in case, set an invalid cid
 }
 
+void ThreadFini(THREADID tid) {
+    //NOTE: Thread has no valid cid here!
+    if (fPtrs[tid].type == FPTR_NOP) {
+        info("Shadow/NOP thread %d finished", tid);
+        return;
+    } else {
+        SimThreadFini(tid);
+        info("Thread %d finished", tid);
+    }
+}
+
 void ThreadStart(THREADID tid) {
     IPCHandler ipcHandler(tid);
 
@@ -666,7 +677,12 @@ void ThreadStart(THREADID tid) {
             auto trace = queuePerThread[tid].front();
             queuePerThread[tid].pop();
 #else
-        auto tracePtr = ipcHandler.receiveTrace();
+        auto traceBarePtr = ipcHandler.receiveTrace();
+        if (traceBarePtr == nullptr) {
+            ThreadFini(tid);
+            SimEnd();
+        }
+        auto tracePtr = std::unique_ptr<struct FrontendTrace>(traceBarePtr);
         auto &trace = *tracePtr;
 #endif
             if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
@@ -710,17 +726,6 @@ void SimThreadFini(THREADID tid) {
 #endif
     zinfo->sched->finish(procIdx, tid);
     cids[tid] = UNINITIALIZED_CID; //clear this cid, it might get reused
-}
-
-void ThreadFini(THREADID tid) {
-    //NOTE: Thread has no valid cid here!
-    if (fPtrs[tid].type == FPTR_NOP) {
-        info("Shadow/NOP thread %d finished", tid);
-        return;
-    } else {
-        SimThreadFini(tid);
-        info("Thread %d finished", tid);
-    }
 }
 
 /* Fork and exec instrumentation */
@@ -1162,8 +1167,6 @@ int main(int argc, char *argv[]) {
         thd.join();
     }
 #endif
-    ThreadFini(0);
-    SimEnd();
     return 0;
 }
 

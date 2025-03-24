@@ -15,13 +15,14 @@ enum TraceDataType {
 
 class IPCHandler {
 private:
+    int thread_id;
     std::string socketPath = "";
     int serverFd = -1;
     int clientFd = -1;
 
     size_t readExactBytes(int fd, void *buffer, size_t size);
 
-    void *readData(enum TraceDataType dataType, void *buffer = nullptr);
+    void *readData(bool *endOfThread, enum TraceDataType dataType, void *buffer = nullptr);
 public:
     IPCHandler(THREADID tid);
 
@@ -29,7 +30,7 @@ public:
 
     void waitAccept();
 
-    std::unique_ptr<struct FrontendTrace> receiveTrace();
+    struct FrontendTrace *receiveTrace();
 };
 
 #endif
