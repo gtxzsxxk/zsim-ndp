@@ -682,6 +682,13 @@ void ThreadStart(THREADID tid) {
                 struct BasicBlock &bbl = trace.blocks[i];
                 bbl.resetProgramIndex();
                 size_t instIndex = 0;
+                size_t ldstCount = 0;
+                for (INS ins = bbl.getHeadInstruction(&instIndex); !bbl.endOfBlock();
+                        ins = bbl.getHeadInstruction(&instIndex)) {
+                    struct BasicBlockLoadStore *ldstList = nullptr;
+                    if (Decoder::riscvInsIsMemAccess(ins)) {
+                            ldstList = &bbl.loadStore[ldstCount++];
+                    }
                     PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
                 }
             }
