@@ -37,10 +37,8 @@ typedef uint64_t ADDRINT;
 typedef bool BOOL;
 
 struct BranchInformation {
-    ADDRINT branchPc;  //0 if last bbl was not a conditional branch
     uint8_t branchTaken;
     ADDRINT branchTakenNpc;
-    ADDRINT branchNotTakenNpc;
 };
 
 struct BasicBlockLoadStore {

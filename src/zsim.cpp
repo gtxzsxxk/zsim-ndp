@@ -503,7 +503,7 @@ static void PrintIp(THREADID tid, ADDRINT ip) {
 }
 #endif
 
-void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *loadStore,
+void PrepareNextInstruction(THREADID tid, INS ins, ADDRINT instAddr, struct BasicBlockLoadStore *loadStore,
         struct BranchInformation *branchInfo) {
     //Uncomment to print an instruction trace
     //INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)PrintIp, IARG_THREAD_ID, IARG_REG_VALUE, REG_INST_PTR, IARG_END);
@@ -529,8 +529,13 @@ void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *l
         }
 
         if (Decoder::riscvInsIsBranch(ins)) {
-            IndirectRecordBranch(tid, branchInfo->branchPc, branchInfo->branchTaken,
-                branchInfo->branchTakenNpc, branchInfo->branchNotTakenNpc);
+            uint8_t firstTwoBits = ins & 0x03;
+            uint8_t nextPcAdd = 2;
+            if (firstTwoBits == 0x03) {
+                nextPcAdd = 4;
+            }
+            IndirectRecordBranch(tid, instAddr, branchInfo->branchTaken,
+                branchInfo->branchTakenNpc, instAddr + nextPcAdd);
         }
     }
 
@@ -557,7 +562,6 @@ void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *l
 }
 
 static std::atomic<bool> activeThreads[MAX_THREADS];  // set in ThreadStart, reset in ThreadFini, we need this for exec() (see FollowChild)
-static uint64_t nextBBLAddressPerThread[MAX_THREADS] = {0};
 #ifdef HARD_CODED_TRACE_TEST
 static std::vector<std::queue<struct FrontendTrace>> queuePerThread;
 static std::vector<std::unique_ptr<std::mutex>> queueMutexPerThread;
@@ -1018,7 +1022,6 @@ void buildTestTrace() {
     bbl0.codeBytes = 14;
     bbl0.code = (uint8_t *) bbl0_code;
     bbl0.loadStore = (struct BasicBlockLoadStore *)malloc(4 * sizeof(struct BasicBlockLoadStore));
-    bbl0.branchInfo.branchPc = 0xffffffff8090f17a;
     bbl0.branchInfo.branchTaken = true;
     bbl0.branchInfo.branchTakenNpc = 0xffffffff8090f174;
     bbl0.virtualPc = 0xffffffff8090f170;
@@ -1035,7 +1038,6 @@ void buildTestTrace() {
     bbl1.codeBytes = 10;
     bbl1.code = (uint8_t *) (bbl0_code) + 4;
     bbl1.loadStore = (struct BasicBlockLoadStore *)malloc(3 * sizeof(struct BasicBlockLoadStore));
-    bbl1.branchInfo.branchPc = 0xffffffff8090f17a;
     bbl1.branchInfo.branchTaken = true;
     bbl1.branchInfo.branchTakenNpc = 0xffffffff8090f174;
     bbl1.virtualPc = 0xffffffff8090f174;
