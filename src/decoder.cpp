@@ -860,7 +860,7 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
         uint32_t prevUops = uopVec.size();
         inaccurate = Decoder::decodeInstr(ins, uopVec);
 
-        instrAddr.push_back(bbl.startAddress + instIndex);
+        instrAddr.push_back(bbl.virtualPc + instIndex);
         instrBytes.push_back(instLength);
         instrUops.push_back(uopVec.size() - prevUops);
         instrDesc.push_back(ins);
@@ -884,7 +884,7 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
         uint32_t pcnt = 0;
         uint32_t pblk = 0;
 
-        ADDRINT startAddr = bbl.startAddress & ~0xfUL;
+        ADDRINT startAddr = bbl.virtualPc & ~0xfUL;
 
         for (uint32_t i = 0; i < instrDesc.size(); i++) {
             ADDRINT addr = instrAddr[i];
@@ -957,7 +957,7 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
 
         //Initialize ooo part
         DynBbl& dynBbl = bblInfo->oooBbl[0];
-        dynBbl.addr = bbl.startAddress;
+        dynBbl.addr = bbl.virtualPc;
         dynBbl.uops = uopVec.size();
         dynBbl.approxInstrs = approxInstrs;
         for (uint32_t i = 0; i < dynBbl.uops; i++) dynBbl.uop[i] = uopVec[i];

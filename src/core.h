@@ -44,7 +44,9 @@ struct BranchInformation {
 };
 
 struct BasicBlockLoadStore {
-    ADDRINT address;
+    ADDRINT addr1;
+    ADDRINT addr2;
+    ADDRINT addr3;
     uint8_t entryValid;
     struct BasicBlockLoadStore *next;
 };
@@ -54,7 +56,9 @@ struct BasicBlock {
     uint8_t *code;
     struct BasicBlockLoadStore *loadStore;
     struct BranchInformation branchInfo;
-    uint64_t startAddress;
+    uint64_t virtualPc;
+    uint64_t midgardPc;
+    uint64_t physicalPc;
     size_t programIndex;
 
     void resetProgramIndex() {

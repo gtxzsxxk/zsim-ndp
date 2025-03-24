@@ -523,7 +523,7 @@ void PrepareNextInstruction(THREADID tid, INS ins, struct BasicBlockLoadStore *l
             struct BasicBlockLoadStore *loadStoreList = loadStore;
             while (loadStoreList != nullptr) {
                 assert(loadStoreList->entryValid);
-                LoadStoreFuncPtr(tid, loadStoreList->address);
+                LoadStoreFuncPtr(tid, loadStoreList->addr1);
                 loadStoreList = loadStore->next;
             }
         }
@@ -676,7 +676,7 @@ void ThreadStart(THREADID tid) {
                         bbl.branchInfo.branchTakenNpc : bbl.branchInfo.branchNotTakenNpc;
                     nextBBLAddressPerThread[tid] = expectNextBBLAddr;
                     BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
-                    IndirectBasicBlock(tid, bbl.startAddress, bblInfo);
+                    IndirectBasicBlock(tid, bbl.virtualPc, bblInfo);
                 }
             }
         
@@ -684,9 +684,7 @@ void ThreadStart(THREADID tid) {
                 struct BasicBlock &bbl = trace.blocks[i];
                 bbl.resetProgramIndex();
                 size_t instIndex = 0;
-                for (INS ins = bbl.getHeadInstruction(); !bbl.endOfBlock();
-                        ins = bbl.getHeadInstruction(), instIndex++) {
-                    PrepareNextInstruction(tid, ins, &bbl.loadStore[instIndex], &bbl.branchInfo);
+                    PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
                 }
             }
 #ifdef HARD_CODED_TRACE_TEST
@@ -1023,12 +1021,11 @@ void buildTestTrace() {
     bbl0.branchInfo.branchPc = 0xffffffff8090f17a;
     bbl0.branchInfo.branchTaken = true;
     bbl0.branchInfo.branchTakenNpc = 0xffffffff8090f174;
-    bbl0.branchInfo.branchNotTakenNpc = 0xffffffff8090f17e;
-    bbl0.startAddress = 0xffffffff8090f170;
+    bbl0.virtualPc = 0xffffffff8090f170;
     bbl0.resetProgramIndex();
     bbl0.loadStore[0].entryValid = false;
     bbl0.loadStore[1].entryValid = true;
-    bbl0.loadStore[1].address = 0xffffffff8190f170;
+    bbl0.loadStore[1].addr1 = 0xffffffff8190f170;
     bbl0.loadStore[1].next = nullptr;
     bbl0.loadStore[2].entryValid = false;
     bbl0.loadStore[3].entryValid = false;
@@ -1041,11 +1038,10 @@ void buildTestTrace() {
     bbl1.branchInfo.branchPc = 0xffffffff8090f17a;
     bbl1.branchInfo.branchTaken = true;
     bbl1.branchInfo.branchTakenNpc = 0xffffffff8090f174;
-    bbl1.branchInfo.branchNotTakenNpc = 0xffffffff8090f17e;
-    bbl1.startAddress = 0xffffffff8090f174;
+    bbl1.virtualPc = 0xffffffff8090f174;
     bbl1.resetProgramIndex();
     bbl1.loadStore[0].entryValid = true;
-    bbl1.loadStore[0].address = 0x8190fa70; /* force a cache miss */
+    bbl1.loadStore[0].addr1 = 0x8190fa70; /* force a cache miss */
     bbl1.loadStore[0].next = nullptr;
     bbl1.loadStore[1].entryValid = false;
     bbl1.loadStore[2].entryValid = false;
