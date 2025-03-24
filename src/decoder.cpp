@@ -232,6 +232,103 @@ uint8_t Decoder::riscvCompressedRegDecode(uint8_t reg) {
     return reg + 8;
 }
 
+bool Decoder::riscvInsIsMemAccess(INS ins) {
+    uint8_t opcode = riscvInsOpCode(ins);
+    uint8_t funct3 = riscvInsFunct3(ins);
+    uint8_t funct7 = riscvInsFunct7(ins);
+    switch (opcode) {
+        case RISCV_OPCODE_INTEGER:
+            break;
+        case RISCV_OPCODE_INTEGER_32:
+            break;
+        case RISCV_OPCODE_INTEGER_IMM:
+            break;
+        // RV64I I-type word instructions (opcode = 0x1B)
+        case RISCV_OPCODE_INTEGER_IMM_32:
+            break;
+        case RISCV_OPCODE_LOAD:
+            return true;
+        case RISCV_OPCODE_STORE:
+        return true;
+        case RISCV_OPCODE_BRANCH:
+        case RISCV_OPCODE_JAL:
+            break;
+        case RISCV_OPCODE_JALR:
+            break;
+        case RISCV_OPCODE_LUI:
+            break;
+        case RISCV_OPCODE_AUIPC:
+            break;
+        case RISCV_OPCODE_ATOMIC:
+            return true;
+        case RISCV_OPCODE_SYSTEM:
+            break;
+        case RISCV_OPCODE_FENCE:
+            break;
+        case RISCV_OPCODE_MADD_FP: // FMADD.S, FMADD.D
+        case RISCV_OPCODE_MSUB_FP: // FMSUB.S, FMSUB.D
+        case RISCV_OPCODE_NMSUB_FP: // FNMSUB.S, FNMSUB.D
+        case RISCV_OPCODE_NMADD_FP: // FNMADD.S, FNMADD.D
+            break;
+        case RISCV_OPCODE_FP: // Floating point operations
+            break;
+        /* To some floating compress instructions:
+         * We will simply simulated it as a general purposed register
+         * since the value does not matter
+         */
+        case RISCV_OPCODE_C0:
+            {
+                uint8_t func = (ins >> 13) & 0x07;
+                switch(func) {
+                    case 0:
+                        break;
+                    case 1:
+                    case 2:
+                    case 3:
+                        return true;
+                    case 5:
+                    case 6:
+                    case 7:
+                        return false;
+                    default:
+                        break;
+                }
+            }
+            break;
+        case RISCV_OPCODE_C1:
+            break;
+        case RISCV_OPCODE_C2:
+            {
+                uint8_t func = (ins >> 13) & 0x07;
+                switch (func) {
+                    case 0: // C.SLLI64
+                        break;
+                    case 1: // C.FLDSP
+                    case 2: // C.LWSP
+                    case 3: // C.LDSP
+                        return true;
+                    case 4: // C.JR C.MV C.EBREAK C.JALR C.ADD
+                        break;
+                    case 5: // C.FSDSP
+                    case 6: // C.SWSP
+                    case 7: // C.SDSP
+                        return true;
+                }
+            }
+            break;
+        /* Use OOO's intrinsic register renaming to simulate vector instructions */
+        case RISCV_OPCODE_VECTOR_LOAD:  // Vector loads
+        case RISCV_OPCODE_VECTOR_STORE:
+            return true;
+        case RISCV_OPCODE_VECTOR_ARITH:  // Vector arithmetic operations
+            break;
+        default:
+            break;
+    }
+
+    return false;
+}
+
 bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
     uint32_t initialUops = uops.size();
     bool inaccurate = false;
@@ -980,6 +1077,7 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
     //Initialize generic part
     bblInfo->instrs = instrDesc.size();
     bblInfo->bytes = bytes;
+    std::cout << "Instructions: " << bblInfo->instrs << std::endl;
 
     return bblInfo;
 }
