@@ -23,6 +23,8 @@ private:
     size_t readExactBytes(int fd, void *buffer, size_t size);
 
     void *readData(bool *endOfThread, enum TraceDataType dataType, void *buffer = nullptr);
+
+    void acknowledgeTrace();
 public:
     IPCHandler(THREADID tid);
 

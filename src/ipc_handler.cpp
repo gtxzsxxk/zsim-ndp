@@ -1,5 +1,6 @@
 #include "ipc_handler.h"
 #include "core.h"
+#include "log.h"
 #include <cstddef>
 #include <memory>
 #include <sstream>
@@ -100,6 +101,11 @@ void *IPCHandler::readData(bool *endOfThread, enum TraceDataType dataType, void 
     return buffer;
 }
 
+void IPCHandler::acknowledgeTrace() {
+    int sent = write(clientFd, "ACK", 4);
+    assert(sent != -1);
+}
+
 /*
  * packet format: size(word) type(word) data
  */
@@ -138,5 +144,6 @@ struct FrontendTrace *IPCHandler::receiveTrace() {
             }
         }
     }
+    acknowledgeTrace();
     return frontendTrace;
 }

@@ -1077,7 +1077,7 @@ BblInfo* Decoder::decodeBbl(struct BasicBlock &bbl, bool oooDecoding) {
     //Initialize generic part
     bblInfo->instrs = instrDesc.size();
     bblInfo->bytes = bytes;
-    std::cout << "Instructions: " << bblInfo->instrs << std::endl;
+    // printf("PC: %016lx, inst count: %d\n", bbl.virtualPc, bblInfo->instrs);
 
     return bblInfo;
 }
