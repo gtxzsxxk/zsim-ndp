@@ -511,6 +511,7 @@ void PrepareNextInstruction(THREADID tid, INS ins, ADDRINT instAddr, struct Basi
     if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
         void (*LoadStoreFuncPtr)(THREADID, ADDRINT) = nullptr;
 
+        /* TODO: atomic instructions */
         bool isLoad = Decoder::riscvInsIsLoad(ins);
         bool isStore = Decoder::riscvInsIsStore(ins);
         if (isLoad) {
@@ -702,8 +703,9 @@ void ThreadStart(THREADID tid) {
                 for (INS ins = bbl.getHeadInstruction(&instIndex); !bbl.endOfBlock();
                         ins = bbl.getHeadInstruction(&instIndex)) {
                     struct BasicBlockLoadStore *ldstList = nullptr;
-                    if (Decoder::riscvInsIsMemAccess(ins)) {
-                            ldstList = &bbl.loadStore[ldstCount++];
+                    if (Decoder::riscvInsIsMemAccess(ins) && !Decoder::riscvInsIsStoreCond(ins)) {
+                        assert(bbl.loadStore);
+                        ldstList = &(bbl.loadStore[ldstCount++]);
                     }
                     PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
                 }

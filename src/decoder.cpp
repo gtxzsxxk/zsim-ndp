@@ -234,8 +234,6 @@ uint8_t Decoder::riscvCompressedRegDecode(uint8_t reg) {
 
 bool Decoder::riscvInsIsMemAccess(INS ins) {
     uint8_t opcode = riscvInsOpCode(ins);
-    uint8_t funct3 = riscvInsFunct3(ins);
-    uint8_t funct7 = riscvInsFunct7(ins);
     switch (opcode) {
         case RISCV_OPCODE_INTEGER:
             break;
@@ -321,6 +319,47 @@ bool Decoder::riscvInsIsMemAccess(INS ins) {
         case RISCV_OPCODE_VECTOR_STORE:
             return true;
         case RISCV_OPCODE_VECTOR_ARITH:  // Vector arithmetic operations
+            break;
+        default:
+            break;
+    }
+
+    return false;
+}
+
+bool Decoder::riscvInsIsStoreCond(INS ins) {
+    uint8_t opcode = riscvInsOpCode(ins);
+    uint8_t funct3 = riscvInsFunct3(ins);
+    uint8_t funct7 = riscvInsFunct7(ins);
+    switch (opcode) {
+        case RISCV_OPCODE_ATOMIC:
+            switch (funct3) {
+                case 0x2: // Word operations
+                case 0x3: // Double word operations
+                    {
+                        uint8_t amo_type = funct7 >> 2;
+                        switch (amo_type) {
+                            case 0x0: // AMOADD
+                            case 0x4: // AMOXOR
+                            case 0x8: // AMOOR
+                            case 0xC: // AMOAND
+                            case 0x10: // AMOMIN
+                            case 0x14: // AMOMAX
+                            case 0x18: // AMOMINU
+                            case 0x1C: // AMOMAXU
+                            case 0x1: // AMOSWAP
+                            case 0x2: // LR (Load Reserved)
+                                break;
+                            case 0x3: // SC (Store Conditional)
+                                return true;
+                            default:
+                                break;
+                        }
+                        break;
+                    }
+                default:
+                    break;
+            }
             break;
         default:
             break;
