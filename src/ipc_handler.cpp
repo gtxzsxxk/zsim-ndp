@@ -128,19 +128,21 @@ struct FrontendTrace *IPCHandler::receiveTrace() {
             return nullptr;
         }
         /* receive load and store */
-        frontendTrace->blocks[i].loadStore = new struct BasicBlockLoadStore[frontendTrace->blocks[i].loadStores];
-        for (size_t j = 0; j < frontendTrace->blocks[i].loadStores; j++) {
-            readData(&needEnd, TRACE_DATA_LOAD_STORE, &frontendTrace->blocks[i].loadStore[j]);
-            if (needEnd) {
-                return nullptr;
-            }
-            auto next = &frontendTrace->blocks[i].loadStore[j].next;
-            while (*next) {
-                *next = reinterpret_cast<struct BasicBlockLoadStore *>(readData(&needEnd, TRACE_DATA_LOAD_STORE));
+        if (frontendTrace->blocks[i].loadStores) {
+            frontendTrace->blocks[i].loadStore = new struct BasicBlockLoadStore[frontendTrace->blocks[i].loadStores];
+            for (size_t j = 0; j < frontendTrace->blocks[i].loadStores; j++) {
+                readData(&needEnd, TRACE_DATA_LOAD_STORE, &frontendTrace->blocks[i].loadStore[j]);
                 if (needEnd) {
                     return nullptr;
                 }
-                next = &((*next)->next);
+                auto next = &frontendTrace->blocks[i].loadStore[j].next;
+                while (*next) {
+                    *next = reinterpret_cast<struct BasicBlockLoadStore *>(readData(&needEnd, TRACE_DATA_LOAD_STORE));
+                    if (needEnd) {
+                        return nullptr;
+                    }
+                    next = &((*next)->next);
+                }
             }
         }
     }
