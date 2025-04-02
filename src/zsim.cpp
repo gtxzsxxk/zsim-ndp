@@ -524,7 +524,7 @@ void PrepareNextInstruction(THREADID tid, INS ins, ADDRINT instAddr, struct Basi
             while (loadStoreList != nullptr) {
                 assert(loadStoreList->entryValid);
                 LoadStoreFuncPtr(tid, loadStoreList->addr1);
-                loadStoreList = loadStore->next;
+                loadStoreList = loadStoreList->next;
             }
         }
 
