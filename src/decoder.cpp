@@ -368,6 +368,10 @@ bool Decoder::riscvInsIsStoreCond(INS ins) {
     return false;
 }
 
+bool Decoder::riscvInsIsWfi(INS ins) {
+    return ins == 0x10500073;
+}
+
 bool Decoder::decodeInstr(INS ins, DynUopVec& uops) {
     uint32_t initialUops = uops.size();
     bool inaccurate = false;

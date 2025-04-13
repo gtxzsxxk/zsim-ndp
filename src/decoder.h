@@ -167,6 +167,7 @@ class Decoder {
         static bool riscvInsIsBranch(INS ins);
         static bool riscvInsIsMemAccess(INS ins);
         static bool riscvInsIsStoreCond(INS ins);
+        static bool riscvInsIsWfi(INS ins);
 
 #ifdef BBL_PROFILING
         static void profileBbl(uint64_t bblIdx);
