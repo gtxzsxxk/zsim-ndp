@@ -571,7 +571,7 @@ static std::vector<std::unique_ptr<std::condition_variable>> queueHasDataPerThre
 
 void ThreadStart(THREADID tid);
 
-void TraceThreadInit(std::vector<std::thread> &threads, int which) {
+void TraceThreadInit(std::vector<std::thread> &threads, int tid) {
 #ifdef HARD_CODED_TRACE_TEST
     queuePerThread.emplace_back();
 
@@ -581,7 +581,7 @@ void TraceThreadInit(std::vector<std::thread> &threads, int which) {
     auto cvPtr = std::make_unique<std::condition_variable>();
     queueHasDataPerThread.push_back(std::move(cvPtr));
 #endif
-    threads.emplace_back(ThreadStart, which);
+    threads.emplace_back(ThreadStart, tid);
     while (!activeThreads[0].load());
 }
 
@@ -1142,7 +1142,9 @@ int main(int argc, char *argv[]) {
     std::vector<std::thread> threads;
     threads.emplace_back(FFThread, nullptr);
 
-    TraceThreadInit(threads, 0);
+    for (uint32_t tid = 0; tid < zinfo->numCores; tid++) {
+        TraceThreadInit(threads, tid);
+    }
 
 #ifdef HARD_CODED_TRACE_TEST
     buildTestTrace();
