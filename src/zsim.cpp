@@ -662,7 +662,7 @@ void ThreadStart(THREADID tid) {
     }
 
     ipcHandler.waitAccept();
-
+    uint64_t trace_count = 0;
     while (true) {
 #ifdef HARD_CODED_TRACE_TEST
         std::unique_lock<std::mutex> lock(*queueMutexPerThread[tid]);
@@ -683,33 +683,48 @@ void ThreadStart(THREADID tid) {
             ThreadFini(tid);
             SimEnd();
         }
+        trace_count++;
+        info("{%lu} %lu trace", trace_count, tid);
         auto tracePtr = std::unique_ptr<struct FrontendTrace>(traceBarePtr);
         auto &trace = *tracePtr;
 #endif
-            if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
-                // Visit every basic block in the trace
-                for (size_t i = 0; i < trace.count; i++) {
-                    struct BasicBlock &bbl = trace.blocks[i];
-                    BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
-                    IndirectBasicBlock(tid, bbl.virtualPc, bblInfo);
-                }
-            }
-        
+        if (bool isSleeping = zinfo->sched->isSleeping(procIdx, tid)) {
+            info("{%lu} %lu exited sleep", trace_count, tid);
+            zinfo->sched->notifySleepEnd(procIdx, tid);
+            zinfo->sched->join(procIdx, tid);
+        }
+
+        if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
+            // Visit every basic block in the trace
             for (size_t i = 0; i < trace.count; i++) {
                 struct BasicBlock &bbl = trace.blocks[i];
-                bbl.resetProgramIndex();
-                size_t instIndex = 0;
-                size_t ldstCount = 0;
-                for (INS ins = bbl.getHeadInstruction(&instIndex); !bbl.endOfBlock();
-                        ins = bbl.getHeadInstruction(&instIndex)) {
-                    struct BasicBlockLoadStore *ldstList = nullptr;
-                    if (Decoder::riscvInsIsMemAccess(ins) && !Decoder::riscvInsIsStoreCond(ins)) {
-                        assert(bbl.loadStore);
-                        ldstList = &(bbl.loadStore[ldstCount++]);
-                    }
-                    PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
-                }
+                BblInfo* bblInfo = Decoder::decodeBbl(bbl, zinfo->oooDecode);
+                IndirectBasicBlock(tid, bbl.virtualPc, bblInfo);
             }
+        }
+    
+        for (size_t i = 0; i < trace.count; i++) {
+            struct BasicBlock &bbl = trace.blocks[i];
+            bbl.resetProgramIndex();
+            size_t instIndex = 0;
+            size_t ldstCount = 0;
+            for (INS ins = bbl.getHeadInstruction(&instIndex); !bbl.endOfBlock();
+                    ins = bbl.getHeadInstruction(&instIndex)) {
+                struct BasicBlockLoadStore *ldstList = nullptr;
+                if (Decoder::riscvInsIsMemAccess(ins) && !Decoder::riscvInsIsStoreCond(ins)) {
+                    assert(bbl.loadStore);
+                    ldstList = &(bbl.loadStore[ldstCount++]);
+                }
+                if (Decoder::riscvInsIsWfi(ins)) {
+                    uint32_t cid = getCid(tid);
+                    uint32_t newCid = zinfo->sched->sync(procIdx, tid, cid);
+                    zinfo->sched->markForSleep(procIdx, tid, UINT64_MAX);
+                    zinfo->sched->leave(procIdx, tid, newCid);
+                    info("{%lu %lu} %lu marked for sleep", trace_count, i, tid);
+                }
+                PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
+            }
+        }
 #ifdef HARD_CODED_TRACE_TEST
         }
 #endif
