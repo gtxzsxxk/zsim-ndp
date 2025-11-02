@@ -28,7 +28,7 @@
 
 //A core model with IPC=1 and no hooks into the memory hierarchy. Useful to isolate threads that need to be run for simulation purposes.
 
-#include "core.h"
+#include "decoder.h"
 #include "pad.h"
 
 class NullCore : public Core {

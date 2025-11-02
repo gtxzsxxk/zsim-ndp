@@ -25,7 +25,7 @@ From now on, we assume we are at the `NDP_PROJECT/` folder, which is referred to
 - `mkdir zsim-env && cd zsim-env`
 - Install pin-3 (We use pin-3.28)
     - `wget https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz`
-    - `tar -xvf pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz && mv pin-3.28-98749-g6643ecee5-gcc-linux pin-3.28` 
+    - `tar -xf pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz && mv pin-3.28-98749-g6643ecee5-gcc-linux pin-3.28` 
     - Updata $PINPATH in .bashrc (remember to update it if you change the path to pin)
         - ` echo "export PINPATH=$(pwd)/pin-3.28" >> ~/.bashrc`
         - `source ~/.bashrc`
@@ -49,7 +49,7 @@ From now on, we assume we are at the `NDP_PROJECT/` folder, which is referred to
         - get the original hdf5 code
             - `wget https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.12/hdf5-1.12.0/src/hdf5-1.12.0.tar.gz`
             <!-- - `tar -xvf hdf5-1.10.5.tar.gz && mv hdf5-1.10.5/* ./ && rm -rf hdf5-1.10.5/` -->
-            - `tar -xvf hdf5-1.12.0.tar.gz && cd hdf5-1.12.0`
+            - `tar -xf hdf5-1.12.0.tar.gz && cd hdf5-1.12.0`
         - `../run_configure.sh`
         - `make -j16 && make install`
         - `cd ../../`
@@ -57,7 +57,7 @@ From now on, we assume we are at the `NDP_PROJECT/` folder, which is referred to
         - `cd libconfig`
         - get the original libconfig code
             - `wget https://hyperrealm.github.io/libconfig/dist/libconfig-1.7.3.tar.gz`
-            - `tar -xvf libconfig-1.7.3.tar.gz && cd libconfig-1.7.3`
+            - `tar -xf libconfig-1.7.3.tar.gz && cd libconfig-1.7.3`
         - `../run_configure.sh`
         - `make -j8 && make install`
         - `cd ../../`

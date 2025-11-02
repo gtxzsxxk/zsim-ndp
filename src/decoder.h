@@ -26,9 +26,10 @@
 #ifndef DECODER_H_
 #define DECODER_H_
 
-#include <stdint.h>
+#include "core.h"
+#include <cstdint>
+#include <cstddef>
 #include <vector>
-#include "pin.H"
 
 // Uncomment to get a count of BBLs run. This is currently used to get a distribution of inaccurate instructions decoded that are actually run
 // NOTE: This is not multiprocess-safe
@@ -77,7 +78,11 @@ struct DynBbl {
     }
 };
 
-struct BblInfo;  // defined in core.h
+struct BblInfo {
+    uint32_t instrs;
+    uint32_t bytes;
+    DynBbl oooBbl[0]; //0 bytes, but will be 1-sized when we have an element (and that element has variable size as well)
+};
 
 /* These are absolute maximums per instruction. If there is some non-conforming instruction, either increase these limits or
  * treat it as a special case.
@@ -89,15 +94,36 @@ struct BblInfo;  // defined in core.h
 
 #define MAX_UOPS_PER_INSTR 12  // technically, even full decoders produce 1-4 uops; we increase this for common microsequenced instructions (e.g. xchg).
 
-/* Temporary register offsets */
-#define REG_LOAD_TEMP (REG_LAST + 1)  // REG_LAST defined by PIN
-#define REG_STORE_TEMP (REG_LOAD_TEMP + MAX_INSTR_LOADS)
-#define REG_STORE_ADDR_TEMP (REG_STORE_TEMP + MAX_INSTR_STORES)
-#define REG_EXEC_TEMP (REG_STORE_ADDR_TEMP + MAX_INSTR_STORES)
-
-#define MAX_REGISTERS (REG_EXEC_TEMP + 64)
+#define MAX_REGISTERS 32
 
 typedef std::vector<DynUop> DynUopVec;
+
+/* RISC-V definitions */
+#define RISCV_OPCODE_ATOMIC                 0x2f
+#define RISCV_OPCODE_INTEGER                0x33
+#define RISCV_OPCODE_INTEGER_IMM            0x13
+#define RISCV_OPCODE_INTEGER_32             0x3b
+#define RISCV_OPCODE_INTEGER_IMM_32         0x1b
+#define RISCV_OPCODE_LOAD                   0x03
+#define RISCV_OPCODE_STORE                  0x23
+#define RISCV_OPCODE_BRANCH                 0x63
+#define RISCV_OPCODE_JAL                    0x6f
+#define RISCV_OPCODE_JALR                   0x67
+#define RISCV_OPCODE_LUI                    0x37
+#define RISCV_OPCODE_AUIPC                  0x17
+#define RISCV_OPCODE_SYSTEM                 0x73
+#define RISCV_OPCODE_FENCE                  0x0f
+#define RISCV_OPCODE_MADD_FP                0x43
+#define RISCV_OPCODE_MSUB_FP                0x47
+#define RISCV_OPCODE_NMSUB_FP               0x4b
+#define RISCV_OPCODE_NMADD_FP               0x4f
+#define RISCV_OPCODE_FP                     0x53
+#define RISCV_OPCODE_C0                     0x0
+#define RISCV_OPCODE_C1                     0x1
+#define RISCV_OPCODE_C2                     0x2
+#define RISCV_OPCODE_VECTOR_LOAD            0x07
+#define RISCV_OPCODE_VECTOR_STORE           0x27
+#define RISCV_OPCODE_VECTOR_ARITH           0x57
 
 //Nehalem-style decoder. Fully static for now
 class Decoder {
@@ -121,12 +147,27 @@ class Decoder {
 
             private:
                 //Put registers in some canonical order -- non-flags first
-                void reorderRegs(uint32_t* regArray, uint32_t numRegs);
+                // void reorderRegs(uint32_t* regArray, uint32_t numRegs);
         };
 
     public:
         //If oooDecoding is true, produces a DynBbl with DynUops that can be used in OOO cores
-        static BblInfo* decodeBbl(BBL bbl, bool oooDecoding);
+        static BblInfo* decodeBbl(struct BasicBlock &bbl, bool oooDecoding);
+
+        static uint8_t riscvInsOpCode(INS ins);
+        static uint8_t riscvInsFunct3(INS ins);
+        static uint8_t riscvInsFunct7(INS ins);
+        static uint8_t riscvInsIsAtomic(INS ins);
+        static uint8_t riscvInsArithRd(INS ins);
+        static uint8_t riscvInsArithRs1(INS ins);
+        static uint8_t riscvInsArithRs2(INS ins);
+        static uint8_t riscvCompressedRegDecode(uint8_t reg);
+        static bool riscvInsIsLoad(INS ins);
+        static bool riscvInsIsStore(INS ins);
+        static bool riscvInsIsBranch(INS ins);
+        static bool riscvInsIsMemAccess(INS ins);
+        static bool riscvInsIsStoreCond(INS ins);
+        static bool riscvInsIsWfi(INS ins);
 
 #ifdef BBL_PROFILING
         static void profileBbl(uint64_t bblIdx);
@@ -140,12 +181,8 @@ class Decoder {
         /* Every emit function can produce 0 or more uops; it returns the number of uops. These are basic templates to make our life easier */
 
         //By default, these emit to temporary registers that depend on the index; this can be overriden, e.g. for moves
-        static void emitLoad(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t destReg = 0);
-        static void emitStore(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t srcReg = 0);
-
-        //Emit all loads and stores for this uop
-        static void emitLoads(Instr& instr, DynUopVec& uops);
-        static void emitStores(Instr& instr, DynUopVec& uops);
+        static void emitLoad(DynUopVec& uops, uint16_t destReg, uint16_t baseReg);
+        static void emitStore(DynUopVec& uops, uint16_t dataReg, uint16_t addrReg);
 
         //Emits a load-store fence uop
         static void emitFence(DynUopVec& uops, uint32_t lat);
@@ -155,37 +192,18 @@ class Decoder {
 
         /* Instruction emits */
 
-        static void emitBasicMove(Instr& instr, DynUopVec& uops, uint32_t lat, uint8_t ports);
-        static void emitConditionalMove(Instr& instr, DynUopVec& uops, uint32_t lat, uint8_t ports);
-
-        // 1 "exec" uop, 0-2 inputs, 0-2 outputs
-        static void emitBasicOp(Instr& instr, DynUopVec& uops, uint32_t lat, uint8_t ports,
-                uint8_t extraSlots = 0, bool reportUnhandled = true);
-
-        // >1 exec uops in a chain: each uop takes 2 inputs, produces 1 output to the next op
-        // in the chain; the final op writes to the 0-2 outputs
-        static void emitChainedOp(Instr& instr, DynUopVec& uops, uint32_t numUops,
-                uint32_t* latArray, uint8_t* portsArray);
-
-        // Some convert ops need 2 chained exec uops, though they have a single input and output
-        static void emitConvert2Op(Instr& instr, DynUopVec& uops, uint32_t lat1, uint32_t lat2,
-                uint8_t ports1, uint8_t ports2);
+        static void emitBasicMove(DynUopVec& uops, uint16_t rd, uint32_t lat, uint8_t ports);
 
         /* Specific cases */
-        static void emitXchg(Instr& instr, DynUopVec& uops);
-        static void emitMul(Instr& instr, DynUopVec& uops);
-        static void emitDiv(Instr& instr, DynUopVec& uops);
-
-        static void emitCompareAndExchange(Instr&, DynUopVec&);
+        static void emitXchg(DynUopVec& uops, uint16_t rd, uint16_t rs1, uint16_t rs2);
+        static void emitMul(DynUopVec& uops, uint16_t rd, uint16_t rs1, uint16_t rs2);
+        static void emitDiv(DynUopVec& uops, uint8_t width, uint16_t rd, uint16_t rs1, uint16_t rs2);
 
         /* Other helper functions */
         static void reportUnhandledCase(Instr& instr, const char* desc);
-        static void populateRegArrays(Instr& instr, uint32_t* srcRegs, uint32_t* dstRegs);
-        static void dropStackRegister(Instr& instr);
 
         /* Macro-op (ins) fusion */
         static bool canFuse(INS ins);
-        static bool decodeFusedInstrs(INS ins, DynUopVec& uops);
 };
 
 #endif  // DECODER_H_

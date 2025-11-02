@@ -28,7 +28,7 @@
 
 //A simple core model with IPC=1 except on memory accesses
 
-#include "core.h"
+#include "decoder.h"
 #include "memory_hierarchy.h"
 #include "pad.h"
 

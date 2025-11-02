@@ -29,6 +29,7 @@
 #include <functional>
 #include <stdint.h>
 #include <vector>
+#include <thread>
 #include "bithacks.h"
 #include "event_recorder.h"
 #include "g_std/g_vector.h"
@@ -160,10 +161,12 @@ class ContentionSim : public GlobAlloc {
 #endif
 
     private:
+        std::vector<std::thread> simThreadVec;
+
         void simThreadLoop(uint32_t thid);
         void simulatePhaseThread(uint32_t thid);
 
-        static void SimThreadTrampoline(void* arg);
+        static void SimThreadTrampoline(ContentionSim* arg);
 };
 
 #endif  // CONTENTION_SIM_H_

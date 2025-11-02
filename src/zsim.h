@@ -45,7 +45,6 @@ class EventQueue;
 class ContentionSim;
 class EventRecorder;
 class MemInterconnectEventRecorder;
-class PinCmd;
 class PortVirtualizer;
 class VectorCounter;
 class AccessTraceWriter;
@@ -126,7 +125,6 @@ struct GlobSimInfo {
     PAD();
 
     ClockDomainInfo clockDomainInfo[MAX_CLOCK_DOMAINS];
-    PortVirtualizer* portVirt[MAX_PORT_DOMAINS];
 
     lock_t ffLock; //global, grabbed in all ff entry/exit ops.
 
@@ -157,8 +155,6 @@ struct GlobSimInfo {
     uint32_t numProcs;
     uint32_t numProcGroups;
 
-    PinCmd* pinCmd; //enables calls to exec() to modify Pin's calling arguments, see zsim.cpp
-
     // If true, threads start as shadow and have no effect on simulation until they call the register magic op
     bool registerThreads;
 
@@ -171,8 +167,6 @@ struct GlobSimInfo {
     bool attachDebugger;
     int harnessPid; //used for debugging purposes
     int debugPortId;
-
-    struct LibInfo libzsimAddrs;
 
     bool ffReinstrument; //true if we should reinstrument on ffwd, works fine with ST apps and it's faster since we run with basically no instrumentation, but it's not precise with MT apps
 

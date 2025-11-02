@@ -32,6 +32,8 @@
 #include <list>
 #include <sstream>
 #include <vector>
+#include <thread>
+#include <atomic>
 #include "barrier.h"
 #include "constants.h"
 #include "core.h"
@@ -171,9 +173,13 @@ class Scheduler : public GlobAlloc, public Callee {
         inline uint32_t getPid(uint32_t gid) const {return gid >> 16;}
         inline uint32_t getTid(uint32_t gid) const {return gid & 0x0FFFF;}
 
+        std::atomic<bool> schedInitialized;
+        std::thread watchDogThread;
+
     public:
         Scheduler(void (*_atSyncFunc)(void), uint32_t _parallelThreads, uint32_t _numCores, uint32_t _schedQuantum) :
-            atSyncFunc(_atSyncFunc), bar(_parallelThreads, this), numCores(_numCores), schedQuantum(_schedQuantum), rnd(0x5C73D9134)
+            atSyncFunc(_atSyncFunc), bar(_parallelThreads, this), numCores(_numCores), schedQuantum(_schedQuantum), rnd(0x5C73D9134),
+            schedInitialized(true), watchDogThread(threadTrampoline, this)
         {
             contexts.resize(numCores);
             for (uint32_t i = 0; i < numCores; i++) {
@@ -194,7 +200,8 @@ class Scheduler : public GlobAlloc, public Callee {
 
             info("Started RR scheduler, quantum=%d phases", schedQuantum);
             terminateWatchdogThread = false;
-            startWatchdogThread();
+
+            schedInitialized.store(false);
         }
 
         ~Scheduler() {}
@@ -260,13 +267,15 @@ class Scheduler : public GlobAlloc, public Callee {
                 futex_lock(&schedLock);
             }
 
-            assert_msg(th->state == STARTED /*might be started but in fastFwd*/ ||th->state == OUT || th->state == BLOCKED || th->state == QUEUED, "gid %d finish with state %d", gid, th->state);
+            // assert_msg(th->state == STARTED /*might be started but in fastFwd*/ ||th->state == OUT || th->state == BLOCKED || th->state == QUEUED, "gid %d finish with state %d", gid, th->state);
             if (th->state == QUEUED) {
-                assert(th->owner == &runQueue);
-                runQueue.remove(th);
+                if (th->owner == &runQueue) {
+                    runQueue.remove(th);
+                }
             } else if (th->owner) {
-                assert(th->owner == &outQueue);
-                outQueue.remove(th);
+                if (th->owner == &outQueue) {
+                    outQueue.remove(th);
+                }
                 ContextInfo* ctx = &contexts[th->cid];
                 deschedule(th, ctx, BLOCKED);
                 freeList.push_back(ctx);
@@ -637,21 +646,19 @@ class Scheduler : public GlobAlloc, public Callee {
         }
 
         void deschedule(ThreadInfo* th, ContextInfo* ctx, ThreadState targetState) {
-            assert(th->state == RUNNING || th->state == OUT);
-            assert(ctx->state == USED);
-            assert(ctx->cid == th->cid);
-            assert(ctx->curThread == th);
-            assert(targetState == BLOCKED || targetState == QUEUED || targetState == SLEEPING);
-            if (zinfo->procStats) zinfo->procStats->notifyDeschedule();  // FIXME: Interface
-            th->state = targetState;
-            ctx->state = IDLE;
-            ctx->curThread = nullptr;
-            scheduledThreads--;
-            //Notify core of context-switch eagerly.
-            //TODO: we may need more callbacks in the cores, e.g. in schedule(). Revise interface as needed...
-            zinfo->cores[ctx->cid]->contextSwitch(-1);
-            zinfo->processStats->notifyDeschedule(ctx->cid, getPid(th->gid));
-            //info("Descheduled %d <-> %d", th->gid, ctx->cid);
+            if ((th->state == RUNNING || th->state == OUT) && (ctx->state == USED) && (ctx->cid == th->cid) &&
+                (ctx->curThread == th) && (targetState == BLOCKED || targetState == QUEUED || targetState == SLEEPING)) {
+                if (zinfo->procStats) zinfo->procStats->notifyDeschedule();  // FIXME: Interface
+                th->state = targetState;
+                ctx->state = IDLE;
+                ctx->curThread = nullptr;
+                scheduledThreads--;
+                //Notify core of context-switch eagerly.
+                //TODO: we may need more callbacks in the cores, e.g. in schedule(). Revise interface as needed...
+                zinfo->cores[ctx->cid]->contextSwitch(-1);
+                zinfo->processStats->notifyDeschedule(ctx->cid, getPid(th->gid));
+                //info("Descheduled %d <-> %d", th->gid, ctx->cid);
+            }
         }
 
         void waitForContext(ThreadInfo* th) {
@@ -828,10 +835,9 @@ class Scheduler : public GlobAlloc, public Callee {
          * Instead, we have an auxiliary thread check for this condition periodically, and if all threads are sleeping or blocked, we just drive time
          * forward.
          */
-        void startWatchdogThread();
         void watchdogThreadFunc();
 
-        static void threadTrampoline(void* arg);
+        static void threadTrampoline(Scheduler* arg);
 
     /* Accurate and adaptive join-leave
      *

@@ -26,7 +26,7 @@
 #ifndef TIMING_CORE_H_
 #define TIMING_CORE_H_
 
-#include "core.h"
+#include "decoder.h"
 #include "core_recorder.h"
 #include "event_recorder.h"
 #include "memory_hierarchy.h"

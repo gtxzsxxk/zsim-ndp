@@ -32,6 +32,7 @@
  * This is a basic model that should be extended as appropriate.
  */
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 

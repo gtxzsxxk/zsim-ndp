@@ -101,17 +101,18 @@ class InList {
         }
 
         void push_back(T* e) {
-            assert(e && e->next == nullptr && e->prev == nullptr && e->owner == nullptr);
-            if (empty()) {
-                head = e;
-                tail = e;
-                e->owner = this;
-            } else {
-                assert(tail);
-                e->linkPrev(tail, this);
-                tail = e;
+            if (e && e->next == nullptr && e->prev == nullptr && e->owner == nullptr) {
+                if (empty()) {
+                    head = e;
+                    tail = e;
+                    e->owner = this;
+                } else {
+                    assert(tail);
+                    e->linkPrev(tail, this);
+                    tail = e;
+                }
+                elems++;
             }
-            elems++;
         }
 
         void pop_front() {
