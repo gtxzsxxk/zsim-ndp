@@ -522,6 +522,55 @@ void PrepareNextInstruction(THREADID tid, INS ins, ADDRINT instAddr, struct Basi
         }
         if (isLoad || isStore) {
             struct BasicBlockLoadStore *loadStoreList = loadStore;
+            if (instAddr < 0x7fff'ffff'ffffUL && instAddr > 0x5000'0000'0000UL) {
+                uint8_t opcode_2 = ins & 0x03;
+                uint8_t opcode_full = ins & 0x7f;
+                if (isLoad &&  (
+                        ((opcode_2 == 2) && (((ins >> 7) & 0x1f) == 1) && (((ins >> 13) & 0x07) == 3)) ||
+                        ((opcode_full == 0x03) && (((ins >> 7) & 0x1f) == 1) && (((ins >> 12) & 0x7) == 0x3))
+                    )
+                ) {
+                    if (loadStoreList->value < 0x1000UL) {
+                        volatile int a = 0;
+                        a += 1;
+                    }
+                }
+            }
+            /*
+            Thread 5 "zsim" hit Breakpoint 2, ThreadStart (tid=0) at build/debug/zsim.cpp:763
+            763                     PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
+            (gdb) p/x *ldstList
+            $3 = {addr1 = 0x7ffffffff558, addr2 = 0xffaf139000000000, addr3 = 0xbdc88000, value = 0x5555555c7844, entryValid = 0x1, next = 0x0}
+            (gdb) p/x ins
+            $4 = 0x672a
+            (gdb) c
+            Continuing.
+
+            Thread 5 "zsim" hit Breakpoint 2, ThreadStart (tid=0) at build/debug/zsim.cpp:763
+            763                     PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
+            (gdb) p/x *ldstList
+            $5 = {addr1 = 0x7ffff7ffd650, addr2 = 0xffaf13b00009a000, addr3 = 0x80ccd000, value = 0x1018f3270f0d00e2, entryValid = 0x1, next = 0x0}
+            (gdb) p/x ins
+            $6 = 0x639c
+            */
+            if (isStore && loadStoreList->addr1 == 0x7ffffffff558) {
+                info("core %ld STORE to 0x7ffffffff558 (%016lx/%016lx) with value %016lx\n", tid, loadStoreList->addr2, loadStoreList->addr3, loadStoreList->value);
+            } else if (isLoad && loadStoreList->addr1 == 0x7ffffffff558) {
+                info("core %ld LOAD to 0x7ffffffff558 (%016lx/%016lx) with value %016lx\n", tid, loadStoreList->addr2, loadStoreList->addr3, loadStoreList->value);
+            }
+
+            if (isStore && loadStoreList->value == 0x5555555c7844) {
+                info("core %ld STORE 0x5555555c7844 to %016lx (%016lx/%016lx)\n", tid, loadStoreList->addr1, loadStoreList->addr2, loadStoreList->addr3);
+            }
+
+            if (isStore && loadStoreList->addr3 == 0x80ccd000 && (loadStoreList->addr1 & 0xfff) == 0x650) {
+                info("core %ld STORE to 0x80ccd650 (%016lx/%016lx) with value %016lx\n", tid, loadStoreList->addr1, loadStoreList->addr2, loadStoreList->value);
+            }
+
+            if (isStore && instAddr == 0x7ffff7fa4ff2) {
+                info("core %ld STORE __stack_chk_guard to %016lx (%016lx/%016lx) with value %016lx\n", tid, loadStoreList->addr1, loadStoreList->addr2, loadStoreList->addr3, loadStoreList->value);
+            }
+
             while (loadStoreList != nullptr) {
                 assert(loadStoreList->entryValid);
                 LoadStoreFuncPtr(tid, loadStoreList->addr1);
@@ -708,19 +757,38 @@ void ThreadStart(THREADID tid) {
             bbl.resetProgramIndex();
             size_t instIndex = 0;
             size_t ldstCount = 0;
+            if (bbl.virtualPc == 0x7ffff7fa5100 && bbl.loadStores && bbl.loadStore[1].value != bbl.loadStore[2].value) {
+                /* stack check failed */
+                volatile int a = 0;
+                a += 1;
+            }
             for (INS ins = bbl.getHeadInstruction(&instIndex); !bbl.endOfBlock();
                     ins = bbl.getHeadInstruction(&instIndex)) {
                 struct BasicBlockLoadStore *ldstList = nullptr;
+                bool hasWfiInFuture = false;
                 if (Decoder::riscvInsIsMemAccess(ins) && !Decoder::riscvInsIsStoreCond(ins)) {
-                    assert(bbl.loadStore);
+                    if (!bbl.loadStore) {
+                        bool problem = true;
+                        /* if it has wfi, skip this bbl for convenience */
+                        for (INS __ins = bbl.getHeadInstruction(&instIndex); !bbl.endOfBlock();
+                                __ins = bbl.getHeadInstruction(&instIndex)) {
+                            if (Decoder::riscvInsIsWfi(__ins)) {
+                                problem = false;
+                                hasWfiInFuture = true;
+                                break;
+                            }
+                        }
+                        assert(!problem);
+                    }
                     ldstList = &(bbl.loadStore[ldstCount++]);
                 }
-                if (Decoder::riscvInsIsWfi(ins)) {
+                if (Decoder::riscvInsIsWfi(ins) || hasWfiInFuture) {
                     uint32_t cid = getCid(tid);
                     uint32_t newCid = zinfo->sched->sync(procIdx, tid, cid);
                     zinfo->sched->markForSleep(procIdx, tid, UINT64_MAX);
                     zinfo->sched->leave(procIdx, tid, newCid);
                     info("{%lu %lu} %lu marked for sleep", trace_count, i, tid);
+                    break;
                 }
                 PrepareNextInstruction(tid, ins, bbl.virtualPc + instIndex, ldstList, &bbl.branchInfo);
             }

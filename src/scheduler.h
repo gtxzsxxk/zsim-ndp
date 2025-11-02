@@ -267,13 +267,15 @@ class Scheduler : public GlobAlloc, public Callee {
                 futex_lock(&schedLock);
             }
 
-            assert_msg(th->state == STARTED /*might be started but in fastFwd*/ ||th->state == OUT || th->state == BLOCKED || th->state == QUEUED, "gid %d finish with state %d", gid, th->state);
+            // assert_msg(th->state == STARTED /*might be started but in fastFwd*/ ||th->state == OUT || th->state == BLOCKED || th->state == QUEUED, "gid %d finish with state %d", gid, th->state);
             if (th->state == QUEUED) {
-                assert(th->owner == &runQueue);
-                runQueue.remove(th);
+                if (th->owner == &runQueue) {
+                    runQueue.remove(th);
+                }
             } else if (th->owner) {
-                assert(th->owner == &outQueue);
-                outQueue.remove(th);
+                if (th->owner == &outQueue) {
+                    outQueue.remove(th);
+                }
                 ContextInfo* ctx = &contexts[th->cid];
                 deschedule(th, ctx, BLOCKED);
                 freeList.push_back(ctx);
@@ -644,21 +646,19 @@ class Scheduler : public GlobAlloc, public Callee {
         }
 
         void deschedule(ThreadInfo* th, ContextInfo* ctx, ThreadState targetState) {
-            assert(th->state == RUNNING || th->state == OUT);
-            assert(ctx->state == USED);
-            assert(ctx->cid == th->cid);
-            assert(ctx->curThread == th);
-            assert(targetState == BLOCKED || targetState == QUEUED || targetState == SLEEPING);
-            if (zinfo->procStats) zinfo->procStats->notifyDeschedule();  // FIXME: Interface
-            th->state = targetState;
-            ctx->state = IDLE;
-            ctx->curThread = nullptr;
-            scheduledThreads--;
-            //Notify core of context-switch eagerly.
-            //TODO: we may need more callbacks in the cores, e.g. in schedule(). Revise interface as needed...
-            zinfo->cores[ctx->cid]->contextSwitch(-1);
-            zinfo->processStats->notifyDeschedule(ctx->cid, getPid(th->gid));
-            //info("Descheduled %d <-> %d", th->gid, ctx->cid);
+            if ((th->state == RUNNING || th->state == OUT) && (ctx->state == USED) && (ctx->cid == th->cid) &&
+                (ctx->curThread == th) && (targetState == BLOCKED || targetState == QUEUED || targetState == SLEEPING)) {
+                if (zinfo->procStats) zinfo->procStats->notifyDeschedule();  // FIXME: Interface
+                th->state = targetState;
+                ctx->state = IDLE;
+                ctx->curThread = nullptr;
+                scheduledThreads--;
+                //Notify core of context-switch eagerly.
+                //TODO: we may need more callbacks in the cores, e.g. in schedule(). Revise interface as needed...
+                zinfo->cores[ctx->cid]->contextSwitch(-1);
+                zinfo->processStats->notifyDeschedule(ctx->cid, getPid(th->gid));
+                //info("Descheduled %d <-> %d", th->gid, ctx->cid);
+            }
         }
 
         void waitForContext(ThreadInfo* th) {

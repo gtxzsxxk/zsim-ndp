@@ -185,6 +185,10 @@ void Decoder::emitDiv(DynUopVec& uops, uint8_t width, uint16_t rd, uint16_t rs1,
 }
 
 uint8_t Decoder::riscvInsOpCode(INS ins) {
+    uint8_t opcode_2 = ins & 0x3;
+    if (opcode_2 != 0x3) {
+        return opcode_2;
+    }
     return ins & 0x7f;
 }
 
@@ -247,7 +251,7 @@ bool Decoder::riscvInsIsMemAccess(INS ins) {
         case RISCV_OPCODE_LOAD:
             return true;
         case RISCV_OPCODE_STORE:
-        return true;
+            return true;
         case RISCV_OPCODE_BRANCH:
         case RISCV_OPCODE_JAL:
             break;

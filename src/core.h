@@ -45,6 +45,7 @@ struct BasicBlockLoadStore {
     ADDRINT addr1;
     ADDRINT addr2;
     ADDRINT addr3;
+    uint64_t value;
     uint8_t entryValid;
     struct BasicBlockLoadStore *next;
 };
