@@ -48,6 +48,24 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 
 然后开始调用VirtCaptureClocks设置虚拟化的**ClockDomainInfo**类。
 
+#### FFIInit
+
+#### VirtInit
+
+初始化zsim的系统调用虚拟化功能。
+
+1. 📁 文件系统 (fs.cpp) Syscalls: SYS_open, SYS_openat。用途： 拦截文件打开请求。这是为了提供一个虚拟文件系统（patchRoot）。当程序尝试读取 /sys/devices/system/node（NUMA 拓扑）或 /proc/cpuinfo（CPU 信息）时，zsim 会拦截这个请求，并给它返回一个伪造的、描述模拟系统拓扑的文件。
+
+2. 🌐 端口/网络 (ports.cpp) Syscalls: SYS_bind, SYS_getsockname, SYS_connect。用途： 虚拟化网络端口。这允许多个 zsim 模拟的进程在模拟的网络上互相通信，而不会占用或干扰宿主机的真实网络端口。
+
+3. 🖥️ CPU 虚拟化 (cpu.cpp) Syscalls: SYS_getcpu, SYS_sched_getaffinity, SYS_sched_setaffinity。用途： 向程序“谎报”CPU 信息。当程序询问“我在哪个CPU上运行？”（getcpu）或“我允许在哪些CPU上运行？”（getaffinity）时，zsim 会拦截它，并根据 Scheduler 的调度（gid -> cid 的映射）返回模拟的 CPU 核心 ID（cid），而不是宿主机的 CPU ID。
+
+4. 🧠 NUMA 虚拟化 (numa.cpp) Syscalls: SYS_get_mempolicy, SYS_set_mempolicy, SYS_mbind, SYS_munmap, SYS_mremap 等。用途： 这是 NUMAMap 机制的核心。zsim 必须拦截所有管理内存策略的调用。set_mempolicy: 当程序设置内存策略（如“本地优先”或“交错”）时，zsim 拦截它，并将这个策略保存到 NUMAMap 的 threadPolicy 中。munmap: 当程序释放内存时，zsim 拦截它，以便更新 NUMAMap 中的 PageMap（页 -> 节点）映射。
+
+5. 🛑 线程控制 (control.cpp) Syscalls: SYS_exit_group。用途： 优雅地终止模拟。当被模拟的程序（的主线程）退出时，zsim 必须捕获这个事件，以便停止所有模拟组件、刷新所有统计数据并干净地退出，而不是让整个 Pin 工具崩溃。
+
+6. ⏰ 时间与超时 (time.cpp, timeout.cpp) Syscalls: SYS_gettimeofday, SYS_time, SYS_nanosleep, SYS_futex, SYS_poll 等。用途： 时间虚拟化。这是模拟器最关键的补丁之一。获取时间： 当程序询问“现在几点了？”（gettimeofday），zsim 会返回模拟时间（即 zinfo->globPhaseCycles），而不是真实的挂钟时间。阻塞/睡眠： 当程序调用 nanosleep 或 futex（等待锁）时，它本意是“阻塞”自己。如果 zsim 让宿主机 OS 真的阻塞它，整个模拟都会卡住。zsim 会拦截这个调用，在 Scheduler 中将该线程设为 SLEEPING 或 BLOCKED 状态，然后继续推进模拟时间，直到满足唤醒条件。
+
 ### PinCmd
 
 ### ContentionSim
