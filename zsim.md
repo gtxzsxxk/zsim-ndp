@@ -66,6 +66,31 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 
 6. ⏰ 时间与超时 (time.cpp, timeout.cpp) Syscalls: SYS_gettimeofday, SYS_time, SYS_nanosleep, SYS_futex, SYS_poll 等。用途： 时间虚拟化。这是模拟器最关键的补丁之一。获取时间： 当程序询问“现在几点了？”（gettimeofday），zsim 会返回模拟时间（即 zinfo->globPhaseCycles），而不是真实的挂钟时间。阻塞/睡眠： 当程序调用 nanosleep 或 futex（等待锁）时，它本意是“阻塞”自己。如果 zsim 让宿主机 OS 真的阻塞它，整个模拟都会卡住。zsim 会拦截这个调用，在 Scheduler 中将该线程设为 SLEEPING 或 BLOCKED 状态，然后继续推进模拟时间，直到满足唤醒条件。
 
+#### VdsoInit
+
+在调用完VirtInit函数后，就会开始调用VdsoInit函数。VirtInit 负责拦截普通的系统调用（那些会陷入内核的），而 VdsoInit 负责拦截走捷径的系统调用（那些完全在用户态完成的）。主要针对clock_gettime、gettimeofday、time、getcpu。
+
+#### 插桩
+
+在初始化完虚拟化后，就要进行插桩了，插桩的部分如下：
+
+1. 核心指令流插桩。使用TRACE_AddInstrumentFunction函数，每当 Pin 发现一个新的 Trace，它就会调用 zsim 的 Trace() 函数。
+2. 线程生命周期管理。使用PIN_AddThreadStartFunction函数和PIN_AddThreadFiniFunction函数。当目标程序 pthread_create 时，zsim 需要在自己的 Scheduler 中注册这个新线程，分配一个 ThreadInfo，并给它分配一个模拟核心 (cid)。Fini: 当线程退出时，zsim 需要回收资源，并在 Scheduler 中注销它。实现的函数是ThreadStart和ThreadFini。
+3. 系统调用拦截。使用PIN_AddSyscallEntryFunction函数和PIN_AddSyscallExitFunction函数。调用的函数为SyscallEnter和SyscallExit。使用PIN_AddContextChangeFunction函数当发生非正常的控制流改变（主要是信号 Signal 处理）时调用ContextChange函数。
+4. 进程与多任务。使用PIN_AddFiniFunction函数
+
+### Trace
+
+### ThreadStart
+
+### ThreadFini
+
+### SyscallEnter
+
+### SyscallExit
+
+### ContextChange
+
 ### PinCmd
 
 ### ContentionSim
