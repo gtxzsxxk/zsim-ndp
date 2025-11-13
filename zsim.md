@@ -50,6 +50,14 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 
 #### FFIInit
 
+然后调用FFIInit函数在进程start时初始化Fast-Forward Intervals。这个函数读取ffiPoints列表（例如 [1M, 9M]）。设置第一个指令限制 ffiInstrsLimit = 1000000。此时，模拟器处于NFF (详细模拟) 模式。
+
+调用FFITrackNFFInterval()。这个函数“设置一个闹钟”。它使用makeAdaptiveEvent创建一个事件，插入到zinfo->eventQueue中。这个事件将在 ffiInstrsLimit这么多（即100万条）详细指令被执行后触发。触发的是ffiFire lambda(切换到 FF)：当这100万条详细指令执行完毕，"闹钟"响起，ffiFire这个lambda匿名函数被执行。它打印 "Entering fast-forward" 并调用 zinfo->procArray[p]->enterFastForward()。模拟器切换到FF(快进)模式。FFIEntryBasicBlock作为过渡函数被调用一次，它会调用FFIAdvance()。
+
+然后执行VirtInit函数。这个函数主要就是patch系统调用，patch了以下部分：
+
+- 
+
 #### VirtInit
 
 初始化zsim的系统调用虚拟化功能。
@@ -77,7 +85,7 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 1. 核心指令流插桩。使用TRACE_AddInstrumentFunction函数，每当 Pin 发现一个新的 Trace，它就会调用 zsim 的 Trace() 函数。
 2. 线程生命周期管理。使用PIN_AddThreadStartFunction函数和PIN_AddThreadFiniFunction函数。当目标程序 pthread_create 时，zsim 需要在自己的 Scheduler 中注册这个新线程，分配一个 ThreadInfo，并给它分配一个模拟核心 (cid)。Fini: 当线程退出时，zsim 需要回收资源，并在 Scheduler 中注销它。实现的函数是ThreadStart和ThreadFini。
 3. 系统调用拦截。使用PIN_AddSyscallEntryFunction函数和PIN_AddSyscallExitFunction函数。调用的函数为SyscallEnter和SyscallExit。使用PIN_AddContextChangeFunction函数当发生非正常的控制流改变（主要是信号 Signal 处理）时调用ContextChange函数。
-4. 进程与多任务。使用PIN_AddFiniFunction函数
+4. 进程与多任务。使用PIN_AddFiniFunction函数在目标程序彻底结束（exit）时调用Fini函数。Fini函数又会接着调用SimEnd函数执行真正的结束任务。使用PIN_AddFollowChildProcessFunction
 
 ### Trace
 
@@ -90,6 +98,10 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 ### SyscallExit
 
 ### ContextChange
+
+### Fini
+
+### SimEnd
 
 ### PinCmd
 
