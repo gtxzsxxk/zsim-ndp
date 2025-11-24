@@ -56,8 +56,6 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 
 然后执行VirtInit函数。这个函数主要就是patch系统调用，patch了以下部分：
 
-- 
-
 #### VirtInit
 
 初始化zsim的系统调用虚拟化功能。
@@ -85,9 +83,11 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 1. 核心指令流插桩。使用TRACE_AddInstrumentFunction函数，每当 Pin 发现一个新的 Trace，它就会调用 zsim 的 Trace() 函数。
 2. 线程生命周期管理。使用PIN_AddThreadStartFunction函数和PIN_AddThreadFiniFunction函数。当目标程序 pthread_create 时，zsim 需要在自己的 Scheduler 中注册这个新线程，分配一个 ThreadInfo，并给它分配一个模拟核心 (cid)。Fini: 当线程退出时，zsim 需要回收资源，并在 Scheduler 中注销它。实现的函数是ThreadStart和ThreadFini。
 3. 系统调用拦截。使用PIN_AddSyscallEntryFunction函数和PIN_AddSyscallExitFunction函数。调用的函数为SyscallEnter和SyscallExit。使用PIN_AddContextChangeFunction函数当发生非正常的控制流改变（主要是信号 Signal 处理）时调用ContextChange函数。
-4. 进程与多任务。使用PIN_AddFiniFunction函数在目标程序彻底结束（exit）时调用Fini函数。Fini函数又会接着调用SimEnd函数执行真正的结束任务。使用PIN_AddFollowChildProcessFunction
+4. 进程与多任务。使用PIN_AddFiniFunction函数在目标程序彻底结束（exit）时调用Fini函数。Fini函数又会接着调用SimEnd函数执行真正的结束任务。同时需要处理进程树的模拟。使用PIN_AddFollowChildProcessFunction指定FollowChild（告诉 Pin，如果当前程序调用了 exec 启动新程序，请继续跟踪新程序，把PinTool注入进去）。然后PIN_AddForkFunction设置调用BeforeFork（赋值静态变量forkedChildNode为procTreeNode->getNextChild()），AfterForkInParent（forkedChildNode设置为nullptr）和AfterForkInChild（调用procTreeNode->notifyStart()，输出新进程的信息，并且初始这个新PIN进程的fPtrs为joinPtrs、cids为UNINITIALIZED_CID，并且让子进程也开始执行FFThread）。然后主进程的代码创建了一个新的线程并执行FFThread函数，然后自己通过PIN_StartProgram函数不再返回。所以这里其实模拟器程序本身最终运行的都是FFThread函数，不管是主进程还是fork后的进程，都需要FFThread函数进行仿真。
 
 ### Trace
+
+### FFThread
 
 ### ThreadStart
 
