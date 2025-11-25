@@ -148,9 +148,64 @@ fPtrs (Function Pointers)：这是一个数组，每个线程 (tid) 对应一个
 
 ### FFThread
 
+这个机制的设计初衷是为了解决 Intel Pin 在多线程环境下处理信号（Signal）不稳定的问题，因此作者选择了一个“笨办法”：用一个线程死循环等待外部触发。
+
+1. FFThread 的核心逻辑：无限等待循环
+    - 角色：这是一个“守护线程”，它不参与模拟，只负责监听开关请求。
+    - 启动：在 main 函数中通过 PIN_SpawnInternalThread 启动。
+        1. 初始化锁：ffToggleLocks 是通信的媒介。线程先锁住它，然后试图再次加锁（见下文），这样它就会阻塞。外部触发器（例如另一个工具 fftoggle）通过解锁 (unlock) 这个 mutex 来“捅”一下 zsim，告诉它“该切换模式了”。
+        2. 进入循环等待触发。`bool locked = futex_trylock_nospin_timeout(..., 5*BILLION);`，线程在这里阻塞。它尝试去锁那个已经被自己锁住的锁（或者等待别人解锁它）。超时机制 (5秒)：它每 5 秒醒来一次，不是为了切换，而是检查 zinfo->terminationConditionMet（模拟是否结束了？），以便优雅退出。被唤醒：如果 locked == true，说明有人在外面解开了这把锁。这意味着收到了切换信号。
+        3. 处理切换请求。拿到全局锁 zinfo->ffLock 保护状态。判断当前状态：情况 A：正在快进 (FF) -> 切回详细模拟。情况 B：正在详细模拟 (NFF) -> 切入快进。
+2. 退出快进 (ExitFastForward) - "简单模式"
+    - 如果当前是快进模式，切换回详细模拟是比较安全的，可以立即执行。
+    - 调用 ExitFastForward()
+        1. VirtCaptureClocks(true)：因为快进时使用的是“假”时间，切回详细模拟前，必须把虚拟时间（TSC/Cycle）同步对齐，确保模拟的时间连续性。
+        2. procTreeNode->exitFastForward()：修改内存中的状态标志 inFastForward = false。原子更新全局计数器。
+        3. __sync_synchronize()：内存屏障，确保标志位变化对所有线程可见。
+        4. PIN_RemoveInstrumentation() (如果配置了 ffReinstrument)： 这会告诉 Pin：“丢弃当前所有的 JIT 代码缓存”。后果：Pin 被迫重新插桩。此时 inFastForward 变成了 false，所以再次调用 Trace() 函数时，会插入 IndirectBasicBlock 和 Load/Store 的回调，从而开启详细模拟。
+3. 进入快进 (EnterFastForward) - "困难模式"
+    - 如果当前正在进行详细模拟，我们不能立即切换。因为模拟器是以 Phase (阶段) 为单位运行的（例如每 10000 个周期同步一次）。如果在阶段中间突然切断详细模拟，会导致不同核心的时间不同步。因此，FFThread 必须等待当前 Phase 结束。
+    - 调用链与握手流程：
+        1. `zinfo->eventQueue->insert(syncEv);`,FFThread 往全局事件队列里扔了一个 SyncEvent。这个事件会在下一个 Phase 结束时被主模拟线程处理。
+        2. `syncEv->wait();`，释放锁并等待 (wait)。
+        3. 主模拟线程 (Main Simulation Thread) 的工作（此时 FFThread 在睡觉）:
+            - 它跑完当前的 Phase。
+            - 处理事件队列，取出 syncEv。
+            - 调用 syncEv->callback()。callback 内部：唤醒 FFThread，然后自己阻塞（等待 FFThread 完成切换工作）。
+        4. FFThread 醒来，重新获取锁，调用 EnterFastForward()。EnterFastForward 的子过程：
+            1. `procTreeNode->enterFastForward()`：设置标志位 inFastForward = true。
+            2. `PIN_RemoveInstrumentation()`：关键！ 再次清空 Pin 的代码缓存。
+        5. `syncEv->signal();`，通知主线程继续，主模拟线程从 callback() 中返回，继续执行（此时已进入快进模式）。
+
 ### ThreadStart
 
+当目标程序调用 pthread_create 或 clone 时，Pin 捕获到这一事件，并调用 ThreadStart。调用时机：目标线程刚刚被操作系统创建，但还没有开始执行任何具体的应用代码。
+
+1. `if (procTreeNode->isInPause()) { ... }`：如果配置要求程序启动时先“暂停”（等待外部信号，比如调试器或多进程同步），这里会阻塞线程。利用 futex_lock 锁同一个变量两次。第一次初始化，第二次阻塞。直到外部工具解开这个锁，线程才会继续。
+2. zsim 根据当前的模拟模式，决定给这个新线程分配什么样的“函数指针表” (fPtrs)：
+    - 快进模式 (isInFastForward)：给线程装配“快进专用”的插桩函数（只计数，不模拟 Cache/Core）。
+    - 影子/注册模式 (registerThreads)：给线程装配“空操作（NOP）”插桩。如果你只关心程序的某个特定区域（ROI）。线程虽然启动了，但在碰到 Magic Op 显式“注册”自己之前，zsim 当它不存在，不模拟它。
+    - 正常详细模拟 (Normal Start)：调用 SimThreadStart(tid)
+
+### SimThreadStart
+
+真正的初始化逻辑：
+
+1. `zinfo->sched->start(...)`：调用 Scheduler 类，在 gidMap 中创建一个新的 ThreadInfo 对象。此时线程状态被设为 STARTED，但还没有分配物理核心 (cid)。
+2. `activeThreads[tid] = true;`：更新本地的活跃位图。
+3. `fPtrs[tid] = joinPtrs;`：新线程不能直接冲进模拟循环，因为它错过了当前 Phase 的同步点。joinPtrs 是一组特殊的函数指针，它们会让线程在执行第一条指令时，强制调用 Scheduler::join()。这样，新线程会先去排队，领取一个 Core ID (cid)，等到下一个 Phase 开始时，才正式加入模拟大军。
+4. `clearCid(tid);`：确保 cids[tid] 被初始化为无效值，等待 Scheduler 分配。
+
 ### ThreadFini
+
+当目标线程执行完毕（pthread_exit 或从线程函数返回）时，Pin 调用此函数。调用时机：线程即将被销毁，此时它还可以执行一些清理代码。
+
+1. `if (fPtrs[tid].type == FPTR_NOP) { return; }`：检查这个线程是不是一个“影子线程”（从未被激活过）。直接忽略，因为它从未在 Scheduler 里注册过，不需要注销。否则调用 SimThreadFini(tid);
+
+### SimThreadFini
+
+1. `zinfo->sched->finish(procIdx, tid);`：注销调度器。
+2. `activeThreads[tid] = false;`、`cids[tid] = UNINITIALIZED_CID;`：更新状态，防止后续有野指针通过 tid 访问到错误的核心数据。
 
 ### SyscallEnter
 
@@ -169,6 +224,10 @@ fPtrs (Function Pointers)：这是一个数组，每个线程 (tid) 对应一个
 ### EventQueue
 
 ### Scheduler
+
+### EndOfPhaseActions
+
+### TakeBarrier
 
 ### AggregateStat
 
