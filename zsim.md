@@ -87,6 +87,65 @@ SimInit调用结束后，初始化fPtrs和cids。fPtrs是所有仿真thread的�
 
 ### Trace
 
+区分两个时间点：
+
+1. 插桩时 (Instrumentation Time)：即 Trace() 函数执行的时候。这是 Pin 在即时编译（JIT）代码，它决定了“要插入什么代码”。
+
+2. 分析/执行时 (Analysis/Execution Time)：即目标程序真正运行的时候。此时，被插入的那些函数（如 IndirectBasicBlock）才会被真正调用。
+
+#### 1. 总入口
+
+当 Pin 发现一段新的代码轨迹（Trace，通常是一串基本块 Basic Block）时调用。它的任务是遍历这段代码，插入 zsim 的回调函数。
+
+代码首先遍历 Trace 中的每一个基本块（BBL）。前提条件： 如果当前处于“快进模式”(FastForward) 且不需要重插桩，则跳过此步（为了性能）。
+
+- Decoder::decodeBbl(bbl, ...)：
+    - 干什么：这是一个静态分析过程。它分析这个 BBL 里有多少指令、有多少内存操作、指令间的依赖关系等。
+    - 产出：生成一个 BblInfo 结构体，里面包含了模拟这个 BBL 所需的所有元数据（指令数、字节数等）。
+- BBL_InsertCall(..., IndirectBasicBlock, ...)：
+    - 干什么：在 BBL 的开头插入一个调用。
+    - 插入了谁：IndirectBasicBlock。
+    - 参数：传入了 BblInfo 指针。
+    - 意义：当程序运行到这个基本块时，zsim 会先获得控制权，拿到这个块的元数据，然后算出这个块消耗了多少周期（Cycle），推进模拟时间。
+
+#### 2. 指令 (Instruction) 级插桩
+
+接着，代码再次遍历 BBL，并深入遍历其中的每一条指令（INS）。调用：Instruction(ins)。职责：决定对当前这条具体的指令“做点什么”。
+
+- 内存访问插桩 (Memory Access)
+    - 判断：通过 INS_IsMemoryRead / INS_IsMemoryWrite 检查指令是否读写内存。
+    - 插入：
+        - 如果是读：插入 IndirectLoadSingle。
+        - 如果是写：插入 IndirectStoreSingle。
+    - 参数：传入 IARG_MEMORYREAD_EA (有效地址)。
+    - 意义：这是 Cache 模拟的基础。zsim 需要拦截每一次内存访问的地址，扔给 Cache 层次结构去判断是 Hit 还是 Miss。
+- 分支预测插桩 (Branch Prediction)
+    - 判断：INS_Category(ins) == XED_CATEGORY_COND_BR（条件跳转）。
+    - 插入：IndirectRecordBranch。
+    - 意义：将分支的跳转方向（Taken/Not Taken）和目标地址传给 CPU 模型的分支预测器 (Branch Predictor)，用来更新预测历史并计算预测失败的惩罚。
+
+##### 虚拟化与魔法指令 (Virtualization & Magic)
+
+这是 zsim 能够“欺骗”目标程序的关键。
+
+- Magic Ops (xchg %rcx, %rcx)：
+    - 插入：HandleMagicOp。
+    - 功能：这是一个“后门”。被模拟的程序可以通过这条特殊的汇编指令告诉 zsim：“开始感兴趣区域(ROI)”、“心跳”、“注册线程”等。这实现了 Guest 和 Host 的通信。
+- CPUID (FakeCPUIDPre/Post)：
+    - 插入：在 CPUID 指令的前后插入。
+    - 功能：CPUID 指令通常返回宿主机的 CPU 信息。zsim 必须拦截它，篡改寄存器（EAX, EBX 等）的值，让程序以为自己运行在 zsim 配置的那个 64 核 CPU 上，而不是你的笔记本电脑上。代码中可以看到它计算 apicId 和 siblings 的逻辑。
+- RDTSC (FakeRDTSCPost)：
+    - 插入：在 RDTSC 指令后插入。
+    - 功能：RDTSC 读取硬件的时间戳计数器。zsim 必须拦截并覆盖它的返回值（EAX:EDX），填入 zinfo->globPhaseCycles（模拟时间）。如果这里不拦截，程序读到的是真实世界的飞快流逝的时间，模拟结果就会完全错误（Time Leakage）。
+
+#### 3. Indirect... 系列函数与 fPtrs：多态的实现
+
+fPtrs (Function Pointers)：这是一个数组，每个线程 (tid) 对应一个 InstrFuncPtrs 结构体，里面存着 loadPtr, storePtr, bblPtr 等函数指针。
+
+- 当线程处于 Detailed Simulation (NFF) 模式时，fPtrs[tid] 指向真正的模拟函数（如 SimLoad）。
+- 当线程处于 Fast Forward (FF) 模式时，fPtrs[tid] 指向空函数（NopLoad）。
+- 当线程处于 Null/Blocked 状态时，它指向另一组函数。
+
 ### FFThread
 
 ### ThreadStart
