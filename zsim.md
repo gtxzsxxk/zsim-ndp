@@ -281,6 +281,12 @@ if (reason == CONTEXT_CHANGE_REASON_FATALSIGNAL) {
 
 ### PinCmd
 
+它的核心任务是将用户在配置文件中简单的命令（例如 ls -l），转换成复杂的 Intel Pin 启动命令（例如 /opt/pin/pin -t /path/to/libzsim.so -config zsim.cfg ... -- ls -l），并处理极其繁琐的环境变量设置。
+
+PinCmd 在两个截然不同的场景下被使用，调用链路略有不同：
+1. Harness 启动时：在 zsim_harness 中，用于通过 fork + execvp 启动初始的模拟进程。
+2. 模拟过程中：在 zsim.cpp (PinTool) 中，当被模拟程序调用 exec() 时，用于告诉 Pin 如何接管新的子进程。
+
 ### ContentionSim
 
 ### EventQueue
