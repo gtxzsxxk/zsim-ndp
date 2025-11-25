@@ -207,15 +207,77 @@ fPtrs (Function Pointers)：这是一个数组，每个线程 (tid) 对应一个
 1. `zinfo->sched->finish(procIdx, tid);`：注销调度器。
 2. `activeThreads[tid] = false;`、`cids[tid] = UNINITIALIZED_CID;`：更新状态，防止后续有野指针通过 tid 访问到错误的核心数据。
 
+### Fini
+
+当被模拟的目标程序（Guest Application）执行完毕，或者 zsim 决定强制结束模拟时，这一套流程会被触发。它们的任务是：确保多线程/多进程环境下的安全退出，并完整地保存统计数据 (zsim.out)。
+
+Fini(int code, VOID * v)仅仅是 Pin 的回调入口。
+
+### SimEnd
+
+1. `if (__sync_bool_compare_and_swap(&perProcessEndFlag, 0, 1) == false)`: 一个进程可能有多个线程。当进程崩溃或调用 exit_group 时，Pin 可能会让多个线程同时触发 Fini / SimEnd。需要确保每个进程只有一个线程执行清理逻辑。
+2. `bool lastToFinish = procTreeNode->notifyEnd();`：告诉全局共享内存（Shared Memory）这个进程已经结束了。原子递减 zinfo->globalActiveProcs（全局活跃进程数）。返回布尔值：如果减完之后变成了 0，说明我是全系统最后一个结束的进程。
+3. Process 0 最终处理。在 zsim 的多进程模型中，进程 0 (Process 0) 被指定为“管家”。其他进程（Process 1, 2...）结束时只管自己死掉，但 Process 0 必须留到最后打扫战场。
+    1. `while (zinfo->globalActiveProcs) usleep(100*1000);`：等待其他进程。
+    2. `for (StatsBackend* backend : ...) backend->dump(false);`：dump统计数据。
+    3. `zinfo->sched->notifyTermination()`：告诉调度器里的 Watchdog 线程，不用再查死锁了，一切要结束了。
+
 ### SyscallEnter
+
+当目标程序执行 syscall 指令但尚未进入内核时，Pin 调用此函数。
+
+1. 触发虚拟化补丁 (Patching)：检查此系统调用是否需要被拦截或修改。
+2. 调度器通知 (Scheduling)：告诉调度器“我要离开用户态去内核办事了”，并交还 CPU (leave)。
+
+子过程：
+
+1. `bool isNopThread = ...;`、`bool isRetryThread = ...;`：检查当前线程是否是“影子线程”（不模拟）或者是正在“重试”某个被中断的系统调用。
+2. `VirtSyscallEnter(tid, ctxt, std, ...);`：patch逻辑的核心入口
+    - 代码中包含了针对 SYS_arch_prctl (CET protection) 和 SYS_clone3 的特殊处理。为了防止 Pin 崩溃或兼容 glibc，zsim 会手动跳过这些指令并返回错误码，假装内核不支持这些特性。
+    - `postPatchFunctions[tid] = prePatchFunctions[syscall](...);`：查表分发，它使用系统调用号 (syscall) 作为索引，在 prePatchFunctions 表（我们在 VirtInit 中见过的）中查找对应的处理函数。
+3. `if (fPtrs[tid].type != FPTR_JOIN && !zinfo->blockingSyscalls) { ... }`：如果这不是一个特殊的 Join 线程，且配置不允许阻塞式系统调用（默认情况）：
+    - 交还 CPU (syscallLeave)：这告诉调度器：（线程 tid）正在离开用户态。我现在占用的物理核心 cid 必须被释放，以便其他线程使用。clearCid(tid)：清除本地的核心映射。
+    - `fPtrs[tid] = joinPtrs;`：设置归来后的行为 (joinPtrs)，这意味着，当系统调用返回并执行下一条用户态指令时，该线程不会直接执行，而是会调用 joinPtrs 指向的函数，被迫去调度器那里排队重新申请核心 (join)。
 
 ### SyscallExit
 
+当系统调用完成，内核即将返回用户态时，Pin 调用此函数。触发虚拟化后处理 (Post-Patching)：处理返回值，决定下一步行动。恢复状态：决定线程接下来是用 joinPtrs 排队，还是恢复正常执行，亦或是进入快进模式。
+
+子过程：
+
+1. `PostPatchAction ppa = VirtSyscallExit(tid, ctxt, std);`：它直接调用之前保存的 `postPatchFunctions[tid](...)`。例如，对于 SYS_futex，它的 Post-Patch 函数可能会检查返回值。如果 futex 决定阻塞线程，Post-Patch 函数会告诉调度器“这个线程睡着了”。返回值 ppa：这是一个动作指令（Action），告诉 SyscallExit 下一步该怎么做。
+2. 下一步：
+    - PPA_USE_JOIN_PTRS：意味着系统调用正常结束。设置 fPtrs[tid] = joinPtrs。线程回到用户态的第一件事就是去调度器排队 (join)。特例：如果 blockingSyscalls 为真（少见配置），则直接恢复 GetFuncPtrs()，不排队。
+    - PPA_USE_RETRY_PTRS：意味着系统调用被信号中断（EINTR），需要重试。设置 fPtrs[tid] = retryPtrs。
+3. `if (fPtrs[tid].type == FPTR_JOIN && procTreeNode->isInFastForward()) { ... }`：Fast-forwarding检查。如果线程在系统调用期间，模拟器切换到了快进模式 (Fast Forward)。那么线程就不应该再去 join（排队等待模拟核心）了，因为快进模式下不需要核心。
+    - `SimThreadFini(tid)`：在 Scheduler 里注销（因为快进模式不需要 Scheduler 管理）。
+    - `fPtrs[tid] = GetFFPtrs()`：直接切换到快进插桩函数。
+4. 如果 `zinfo->terminationConditionMet` 为真（例如某个进程调用了 exit_group），则调用 SimEnd() 结束整个模拟。
+
 ### ContextChange
 
-### Fini
+在正常的模拟流程中，程序按照“基本块 -> 系统调用 -> 基本块”的顺序执行。但是，信号（Signals）的存在打破了这种顺序。当操作系统向进程发送信号（比如 SIGSEGV 段错误，或者 SIGINT 中断）时，程序的控制流会突然从当前位置“瞬移”到信号处理函数，或者直接被终止。
 
-### SimEnd
+ContextChange 就是 Intel Pin 提供的一个回调函数，用来通知 zsim 发生了非正常的上下文跳转（不是普通的函数调用或跳转）。
+
+```c++
+warn("[%d] ContextChange, reason %s, inSyscall %d", tid, reasonStr, inSyscall[tid]);
+if (inSyscall[tid]) {
+    SyscallExit(tid, to, SYSCALL_STANDARD_IA32E_LINUX, nullptr);
+}
+```
+
+zsim 在 SyscallEnter 时会将 inSyscall[tid] 设为 true。正常情况下，SyscallExit 会将其设回 false。如果系统调用被信号打断（例如 EINTR），Pin 可能不会触发标准的 SyscallExit 回调，而是直接触发 ContextChange 跳转到信号处理函数。如果不处理，inSyscall[tid] 会一直保留为 true。等信号处理完回到主程序，下一次系统调用时，zsim 会断言失败（assert false）或者逻辑错乱。在这里强制手动调用 SyscallExit。这相当于帮 zsim “打补丁”，强行结束上一个系统调用的模拟状态，确保状态机复位。
+
+```c++
+if (reason == CONTEXT_CHANGE_REASON_FATALSIGNAL) {
+    info("[%d] Fatal signal caught, finishing", tid);
+    zinfo->sched->queueProcessCleanup(procIdx, getpid());
+    SimEnd();
+}
+```
+
+如果发生了段错误，queueProcessCleanup：通知调度器清理这个进程的遗体（释放核心、移除线程结构）。SimEnd()：这非常重要。即使程序崩溃了，zsim 也希望能够把已经收集到的统计数据（zsim.out）写盘保存，而不是直接随程序一起消失。这让用户能看到“崩溃前到底发生了什么”。
 
 ### PinCmd
 
