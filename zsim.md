@@ -289,6 +289,70 @@ PinCmd 在两个截然不同的场景下被使用，调用链路略有不同：
 
 ### ContentionSim
 
+ContentionSim 是 zsim 中负责模拟非核心组件（如缓存、内存、互连）时序竞争和延迟的核心引擎。它与基于 Pin 的功能模拟（Functional Simulation）和 CPU 核心的时序模拟（Timing Simulation）是并行且解耦的。
+
+zsim 采用了一种Bound-Weave 模型：
+- Bound Phase (Core Timing): 每个 CPU 核心独立运行，生成指令流和内存请求事件，估算核心内部延迟。这些事件被扔进 ContentionSim。
+- Weave Phase (Contention Sim): ContentionSim 接管所有事件，模拟它们在缓存层次、网络和内存中的交互、排队和竞争，计算最终的系统延迟。
+
+#### 初始化阶段
+
+调用顺序： zsim.cpp:SimInit -> ContentionSim() -> postInit() -> initStats()
+
+子过程与实现：
+1. ContentionSim() 构造函数：
+    - 创建域 (Domains)：zsim 为了并行化，将硬件系统划分为多个“域”（Domain）。通常一个 Domain 对应一个 Cache Bank 或 Memory Controller。domains 数组被分配。
+    - 分配线程：创建 numSimThreads 个后台线程。每个线程负责模拟一部分 Domain。
+    - 启动线程：PIN_SpawnInternalThread(SimThreadTrampoline, ...) 启动这些线程。它们启动后会立即在 futex_lock 上阻塞，等待唤醒。
+    - 初始化队列：每个 Domain 都有一个 PrioQueue（优先队列），用于存放按时间排序的 TimingEvent。
+2. postInit()：检查系统中有没有核心需要争用模拟 (needsCSim())。如果是纯功能模拟（如快进），skipContention 会被设为 true，跳过后续所有工作。
+
+#### Bound Phase
+
+在这个阶段，CPU 核心在 Pin 的控制下执行指令。ContentionSim 在此阶段主要扮演接收器的角色。动作：事件入队 (enqueue / enqueueSynced)
+
+子过程：
+1. 事件产生：当核心模拟到 Cache 访问、DRAM 刷新 (RefreshEvent) 或周期性任务 (TickEvent) 时，会创建一个继承自 TimingEvent 的对象。
+2. 入队 (enqueueSynced)：
+    - 核心调用此函数将事件放入目标 Domain 的优先队列中。
+    - 必须加锁 (pqLock)，因为多个核心可能同时向同一个 L3 Cache Domain 发送请求。
+    - 事件被标记上 startCycle（发起时间）。
+
+特殊事件：跨域访问 (enqueueCrossing)
+- 当一个事件从一个 Domain（比如 L2 Cache）流向另一个 Domain（比如 L3 Cache）时，会产生 CrossingEvent。
+- enqueueCrossing 负责处理这种依赖关系，确保事件链的正确性。它可能会把新事件挂在旧事件（lastCrossing）后面，形成因果链。
+
+#### Weave Phase
+
+当所有核心都跑完当前的 Phase（比如 10000 周期）后，调度器调用 EndOfPhaseActions。
+
+调用顺序： zsim.cpp:EndOfPhaseActions -> ContentionSim::simulatePhase(limit)
+
+子过程与实现：
+1. simulatePhase(limit)
+    - 核心准备：调用所有 zinfo->cores[i]->cSimStart()。
+    - 唤醒模拟线程：futex_unlock(&simThreads[i].wakeLock)。唤醒所有后台模拟线程。
+    - 等待完成：主线程自己调用 futex_lock_nospin(&waitLock) 进入睡眠，等待所有后台线程干完活。
+2. simThreadLoop -> simulatePhaseThread (后台线程工作逻辑)
+    - 每个线程负责模拟它管辖的若干个 Domain（从 firstDomain 到 supDomain）。
+    - 如果只管 1 个 Domain：这是一个优化路径。它只需简单地从 PrioQueue 中取出最早的事件 (dequeue)，调用事件的 run() 或 simulate() 方法，然后处理下一个，直到时间推进到 limit。
+    - 如果管多个 Domain (多路归并)：
+        - 它需要维护这些 Domain 之间的时间同步。
+        - 它使用一个本地优先队列 (domPq) 来决定“哪个 Domain 的下一个事件最早发生”。
+        - 复杂的同步逻辑：
+            - 它不仅要处理内部事件，还要处理跨域事件 (CrossingEvent)。
+            - CrossingEvent 有一个棘手的问题：源 Domain 的时间必须先推进，目标 Domain 才能安全地处理该事件。
+            - 代码中的 stalledQueue 和 nextStalledQueue 就是为了处理这种依赖。如果一个 Domain 等待外部输入（prio > 0），它会被放入 Stall 队列暂时搁置。
+3. 事件模拟 (TimingEvent::simulate / CrossingEvent::simulate)
+    - 这是具体的硬件逻辑。例如 TickEvent 会调用 DDRMemory::tick()。
+    - CrossingEvent 代表两个独立时钟域之间的握手。
+        - simulate 会检查源 Domain 的时间 (srcDomainCycleAtDone)。
+        - 如果源时间还没赶上来，CrossingEvent 会重新入队 (requeue)，稍后再试。这模拟了“数据还没传过来”的情况。
+        - 一旦源时间满足条件，它计算传输延迟，更新目标时间。
+4. 阶段结束
+    - 当所有后台线程都把时间推进到了 limit，最后一个完成的线程会解锁 waitLock。
+    - 主线程醒来，调用 cSimEnd() 通知核心，然后结束 EndOfPhaseActions。
+
 ### EventQueue
 
 ### Scheduler
