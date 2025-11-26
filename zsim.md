@@ -443,9 +443,105 @@ zsim 采用的是 Round-Robin（轮询） 调度策略，并结合了Barrier（�
 * **Time Virtualization**: 通过 `PatchNanosleep` 等 Hooks，将 Guest 的纳秒级 Sleep 映射为 Simulator 的 `Phase` 计数。
 * **Futex Matching**: 拦截 `SYS_futex` 调用，通过 `notifyFutexWakeStart` 等接口跟踪 Host 层的 Thread Wakeup 事件，确保 Simulator 内部的 Timestamp 与 Causality 一致。
 
+### TakeBarrier
+
+`TakeBarrier` 是 **Guest Thread** 在完成了一个 **Time Quantum (时间片/Phase)** 的本地指令模拟后，主动调用的同步函数。它是连接 **Core Model** 与 **Scheduler** 的桥梁。
+
+#### Triggering Condition
+
+正如 `NullCore::BblFunc`, `OOOCore::BblFunc` 等代码所示，每个 Core 模型都有一个本地时钟 `curCycle`。
+
+  * 当 `core->curCycle > core->phaseEndCycle` 时（即当前 Phase 的时间配额用尽），Core 模拟循环中断。
+  * 调用 `TakeBarrier(tid, cid)`。
+
+#### Core Logic
+
+1.  **进入同步屏障 (Barrier Entry)**:
+
+      * 调用 `zinfo->sched->sync(procIdx, tid, cid)`。
+      * **行为**：当前线程在此处挂起 (Blocked)，等待所有其他线程到达屏障。
+      * **副作用**：如果是最后一个到达屏障的线程，它会触发 `Scheduler::callback`，进而触发 `EndOfPhaseActions`（见下文）。
+
+2.  **更新核心映射 (Context Update)**:
+
+      * `sync` 返回后，意味着 Barrier 解除，且 **Scheduler 可能已经执行了调度决策**。
+      * 返回值 `newCid` 是 Scheduler 分配给该线程的 **新物理核心 ID**。
+      * `clearCid(tid)` / `setCid(tid, newCid)`：更新全局映射表，反映线程可能发生的迁移。
+
+3.  **状态转换处理 (State Transition Handling)**:
+
+      * **Fast Forward Check**: 如果模拟器切换到了快进模式 (`isInFastForward`)，当前线程执行 `SimThreadFini`（注销），切换 `fPtrs` 为快进指针，并在此处终止详细模拟。
+      * **Termination Check**: 如果模拟结束，调用 `SimEnd`。
+      * **Context Switch**: 如果没有特殊状态变化，更新 `fPtrs[tid]` 为新核心 (`cores[newCid]`) 的函数指针。这是为了支持异构核心模拟（例如从乱序核切换到顺序核），尽管 zsim 通常是同构的。
+
+4.  **返回新核心 ID**:
+
+      * 函数返回 `newCid`。
+      * **重要机制**：在 `BblFunc` 的循环中：
+        ```cpp
+        if (newCid != cid) break;
+        ```
+        如果发生 **Context Switch (上下文切换)**，线程必须立即跳出当前的 `BblFunc` 循环。因为 `BblFunc` 是特定 Core 对象（如 `OOOCore`）的成员函数，如果线程已经被调度到了另一个 Core，它就不能继续操作当前 Core 对象的内部状态（如 ROB, L1 Cache），否则会导致 **Race Condition** 或数据损坏。
+
 ### EndOfPhaseActions
 
-### TakeBarrier
+`EndOfPhaseActions` 是 **Global Synchronization Barrier** 期间执行的全局回调。
+
+**注意**：虽然它在代码上是一个独立函数，但在执行流上，它是由**最后一个进入 `TakeBarrier` 的线程**在 `Scheduler::callback` 内部调用的。此时，所有其他模拟线程都处于 `futex_wait` 状态（被屏障阻拦）。
+
+#### Triggering Condition
+
+1.  **性能分析埋点 (Profiling Instrumentation)**:
+
+      * `zinfo->profSimTime->transition(PROF_WEAVE)`：标记模拟器进入 **Weave Phase**。统计时间将计入争用模拟开销。
+
+2.  **全局暂停与流控 (Global Pause & Flow Control)**:
+
+      * 检查 `globalPauseFlag` 或 `globalSyncedFFProcs`。
+      * 如果在同步点发现需要暂停或切换模式，主控线程会在此处 **Busy-Wait (自旋等待)**，直到外部条件解除。这是为了防止在 Phase 中间状态不一致时进行模式切换。
+
+3.  **执行争用模拟 (Contention Simulation) —— 核心任务**:
+
+      * `zinfo->contentionSim->simulatePhase(...)`。
+      * 这是 zsim **Bound-Weave** 模型的 **Weave** 阶段。
+      * 在此之前（Bound Phase），Cores 只是生成了带有时间戳的内存请求事件，放入了队列，但没有计算它们在 L2/L3/DRAM 里的排队延迟。
+      * 此函数会唤醒 `ContentionSim` 的工作线程，处理这些积压的事件，计算出精确的全局时序，并更新各组件的状态。
+
+4.  **推进宏观事件 (Event Queue Tick)**:
+
+      * `zinfo->eventQueue->tick()`。
+      * 处理周期性的宏观任务（如打印心跳、死锁检测、采样切换）。
+
+5.  **进入下一阶段**:
+
+      * `zinfo->profSimTime->transition(PROF_BOUND)`。
+      * 标记 Weave 阶段结束，准备释放所有线程回到 **Bound Phase**。
+
+#### Core Logic
+
+这是一个基于 **Bulk Synchronous Parallel (BSP)** 模型的执行循环：
+
+1.  **Bound Phase (Parallel)**:
+
+      * 所有 Guest Threads 在各自的 Host Core 上运行 `BblFunc`。
+      * 执行指令，产生 `TimingEvent`，直到本地时间 `curCycle` 超过 `phaseEndCycle`。
+      * 调用 `TakeBarrier`。
+
+2.  **Barrier Phase (Serial/Synchronous)**:
+
+      * 线程进入 `Scheduler`，在 Barrier 处等待。
+      * **Last Thread Reaches Barrier**:
+          * 触发 `Scheduler::callback` -\> 更新 `curPhase`。
+          * 触发 `EndOfPhaseActions`。
+          * 执行 `ContentionSim::simulatePhase` (模拟缓存/内存争用)。
+          * 执行 `EventQueue::tick`。
+
+3.  **Resume (Parallel)**:
+
+      * Barrier 释放所有线程。
+      * 线程从 `TakeBarrier` 返回。
+      * 检查 `newCid`，如果发生了 Context Switch，跳转到新 Core 的代码执行。
+      * 增加 `phaseEndCycle`，开始下一个 Phase 的模拟。
 
 ### AggregateStat
 
@@ -456,5 +552,3 @@ zsim 采用的是 Round-Robin（轮询） 调度策略，并结合了Barrier（�
 ### ProcessStats
 
 ### ProcStats
-
-### 
