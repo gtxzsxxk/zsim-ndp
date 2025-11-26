@@ -355,7 +355,93 @@ zsim 采用了一种Bound-Weave 模型：
 
 ### EventQueue
 
+zsim 中的两个时间尺度：
+- 微观尺度 (Cycle-Level)：由 ContentionSim 管理。处理 Cache 访问、内存争用，精度为 1 时钟周期。
+- 宏观尺度 (Phase-Level)：由 EventQueue 管理。处理统计数据转储、快进切换、死锁检测等，精度为 1 个 Phase（通常是 10,000 到 100,000 个周期）。
+
+EventQueue 的生命周期非常清晰，主要由 insert（生产者）和 tick（消费者）组成。
+1. 生产者：insert。任何组件（Core, Scheduler, FFI）都可以在任何时候调用 insert 来预约一个未来的任务。
+    - 调用示例：
+        - FFI (快进)：zinfo->eventQueue->insert(makeAdaptiveEvent(...)) —— 在执行了 X 条指令后的那个 Phase 唤醒。
+        - Stats (统计)：zinfo->eventQueue->insert(new PeriodicStatsDumpEvent(...)) —— 每隔 100 个 Phase dump一次统计数据。
+2. 消费者：tick (每个 Phase 结束时)。这是 EventQueue 真正工作的时刻。
+    - 调用链路：
+        1. zsim.cpp (PinTool 主循环或后台线程) 触发 EndOfPhaseActions()。
+        2. EndOfPhaseActions() 做完一些杂事（如检查暂停）。
+        3. 调用 zinfo->eventQueue->tick()。
+
 ### Scheduler
+
+它的核心任务是解决 M 个软件线程（Guest Threads）如何跑在 N 个模拟核心（Host Cores/Contexts）上的问题。
+
+zsim 采用的是 Round-Robin（轮询） 调度策略，并结合了Barrier（屏障） 同步机制来推进模拟时间（Phases）。
+
+关键状态和结构：
+- gid (Global ID): 软件线程 ID (PID << 16 | TID)。
+- cid (Core ID): 模拟硬件核心 ID (0 ~ numCores-1)。
+- ThreadInfo: 软件线程的状态（RUNNING, BLOCKED, SLEEPING, QUEUED）。
+- ContextInfo: 硬件核心的状态（IDLE, USED）。
+- runQueue: 想运行但没有核心用的线程队列。
+- freeList: 空闲的、没有线程跑的核心队列。
+
+`Scheduler` 通过一组 Finite State Machine (FSM) 来管理线程生命周期。
+
+#### A. Initialization & Registration
+
+* **System Init**: `SimInit` 调用 `new Scheduler`，初始化 `contexts` 向量并将所有核心置入 `freeList`。同时启动 **Watchdog Thread** 用于 Liveness Monitoring。
+* **Thread Registration**: 当 Pin 截获线程创建事件 (`SimThreadStart`) 时，调用 `sched->start`。调度器在 `gidMap` 中实例化 `ThreadInfo`，初始状态置为 `STARTED`。
+
+#### B. Arbitration —— `join` Process
+
+当 Guest Thread 启动或从阻塞状态返回时，需调用 `join` 申请计算资源 (`cid`)。
+
+1.  **State Check**: 若线程状态为 `OUT`（即刚执行完 Syscall 离开，且保留了 Context），则执行 **Fast Path Recovery**，直接恢复为 `RUNNING` 并加入 Barrier。
+2.  **Scheduling Decision (`schedThread`)**: 若线程处于 `BLOCKED` 或 `STARTED`，调度器按以下优先级尝试分配资源：
+    * **Affinity**: 检查该线程上次持有的 `cid` 是否为 `IDLE`。
+    * **Free Resources**: 检查 `freeList` 是否有可用 Context。
+    * **Preemption**: 检查 `outQueue`，寻找处于 `OUT` 状态的线程所占用的 `ContextInfo`，执行 `deschedule` 将其 Context 剥离，以回收资源。
+3.  **Arbitration Result**:
+    * **Success**: 调用 `schedule` 建立 `ThreadInfo` 与 `ContextInfo` 的双向映射。
+    * **Failure**: 将线程状态置为 `QUEUED` 并压入 `runQueue`。线程随即在 Host 的 `futex` 上挂起 (`waitForContext`)，进入 Sleep 状态等待 Wakeup。
+
+#### C. Execution & Synchronization —— `sync` Process
+
+这是模拟的主循环，驱动 **Discrete Time Stepping**。
+
+1.  **Barrier Synchronization**: 线程调用 `sched->sync` 进入 `Barrier`。
+2.  **Phase Transition (`callback`)**:
+    * 当所有 Active Threads 到达 Barrier 时，触发 `Scheduler::callback`。
+    * 全局模拟时间 `curPhase` 递增。
+    * **Deadline Check**: 扫描 `sleepQueue`，唤醒 (`wakeup`) 那些 `wakeupPhase` 已到期的线程，将其移至 `runQueue` 参与竞争。
+    * **Round-Robin Scheduling (`schedTick`)**: 若达到 `schedQuantum`，触发强制调度。算法 Shuffle 核心顺序，从 `runQueue` 中选取线程，并指定当前运行的某个线程为 Victim (`victimTh`)，设置其 `handoffThread` 指针，准备 **Context Switch**。
+3.  **Context Switch (Handoff)**:
+    * 从 Barrier 返回后，线程检查自身的 `handoffThread` 字段。
+    * 若非空，当前线程执行 **Cooperative Context Switch**：`deschedule` 自身，`schedule` 并 `wakeup` 目标线程，随后自身挂起。
+
+#### D. Yielding —— `leave` Process
+
+当 Guest Thread 执行 Syscall 进入 Kernel Mode 时，需释放模拟核心资源。
+
+1.  **Syscall Interception**: `SyscallEnter` 触发 `sched->syscallLeave`。
+2.  **Optimistic Optimization (Fake Leave)**:
+    * 对于非阻塞的短 Syscall，zsim 采用 **Speculative Execution** 策略，不真正释放 `cid`，而是创建一个 `FakeLeaveInfo` 记录。这避免了频繁更新全局状态的 Overhead。
+3.  **True Leave**:
+    * 若 Syscall 在 Blacklist 中（已知会阻塞），或线程被标记为 Sleep，则执行 `leave`。
+    * **Context Detachment**: 尝试将当前 `cid` 转交给 `runQueue` 中的等待线程。若无等待线程，则将 `ContextInfo` 归还至 `freeList`（或在保留 Affinity 的前提下标记为 `OUT`）。
+    * 线程退出 Barrier，不再参与当前 Phase 的同步。
+
+#### Watchdog Thread
+
+`watchdogThreadFunc` 是一个独立运行的 Daemon Thread，负责 Deadlock Detection 和 Recovery。
+
+* **Deadlock Detection**: 监控 `curPhase` 的推进。若长时间停滞，判定为 Deadlock。
+* **Fake Leave Correction**: 监控 `fakeLeaves` 队列。若发现某个 "Fake Leave" 的线程长期未返回（即 Speculation 失败，Syscall 发生了实际阻塞），Watchdog 会强制执行 `finishFakeLeave` -> `leave` 序列，将其转换为 "True Leave"，从而释放核心资源，解除 Deadlock。该 Syscall 随后会被加入 Blacklist。
+* **Time Advancement**: 当系统处于 Idle 状态（所有线程均在 `sleepQueue` 或阻塞）时，Watchdog 负责空转推进模拟时间，直到最近的 Wakeup 时间点。
+
+#### Virtualization Support
+
+* **Time Virtualization**: 通过 `PatchNanosleep` 等 Hooks，将 Guest 的纳秒级 Sleep 映射为 Simulator 的 `Phase` 计数。
+* **Futex Matching**: 拦截 `SYS_futex` 调用，通过 `notifyFutexWakeStart` 等接口跟踪 Host 层的 Thread Wakeup 事件，确保 Simulator 内部的 Timestamp 与 Causality 一致。
 
 ### EndOfPhaseActions
 
