@@ -652,6 +652,77 @@ zinfo->portVirt[i] = new PortVirtualizer();
 
 ### NUMAMap
 
+基于提供的代码片段，以下是对 `zsim` 中 `NUMAMap` 机制及其 NUMA 仿真实现的详细技术分析。
+
+`NUMAMap` 是 `zsim` 中负责模拟 **Non-Uniform Memory Access (NUMA)** 架构的核心组件。它充当了一个 **Virtual Memory Manager** 的角色，维护着从 Application 的 Virtual Pages 到模拟硬件的 Physical NUMA Nodes 的映射关系。
+
+#### 核心架构与初始化
+
+zsim 不依赖 Host 机器的物理 NUMA 拓扑，而是通过 **文件系统虚拟化** 来定义模拟目标的拓扑结构。
+
+- **Topology Definition (patchRoot)**:
+  - 在 `InitNUMA` 中，zsim 要求所有进程必须配置相同的 `patchRoot` 路径。
+  - `NUMAMap` 的构造函数通过读取 `patchRoot` 目录下的虚拟 `sysfs` 文件（具体为 `/sys/devices/system/node/nodeN/cpumap`）来构建静态的 **Core-to-Node Mapping**。
+  - 这意味着用户可以通过构造一个包含特定配置文件的目录树，来模拟任意的 NUMA 拓扑（例如 4 个节点，每个节点 8 个核心），而与运行仿真的 Host 硬件无关。
+
+- **Address Mapping Strategy**:
+  - `zsim` 使用 `NUMAAddressMap` 类来决定内存请求的路由。
+  - 公式 `n * total / nodes + nodeMap->getMap(lineAddr)` 表明，zsim 将全局内存地址空间按照 Node ID 切分。`NUMAMap` 决定数据在哪个 Node，进而决定了请求会被发送到哪个 Memory Controller (MC)。
+
+#### 内存映射机制
+
+`NUMAMap` 维护了模拟过程中的动态内存状态。核心数据结构是 `PageMap`。
+
+- **Page-to-Node Mapping (`PageMap`)**:
+  - 这是一个基于 **Chunk-based Sparse Map** 的线程安全数据结构。
+  - 它将 Virtual Address Space 划分为 Chunks（代码中定义为 `CHUNK_BITS=16`，即 256MB），每个 Chunk 内部维护一组 `PageRange`。
+  - 这种设计允许高效地存储和查询稀疏的内存分配，支持大范围的内存操作（如 `mbind` 或 `munmap`）。
+  - 它记录了每一个 Virtual Page 当前被分配到了哪个 Simulated NUMA Node 上。
+
+- **On-Demand Allocation (First-Touch Policy)**:
+  - zsim 模拟了操作系统内核的 **First-Touch Allocation** 策略。
+  - 在 `FilterCache` 的 `load/store` 操作中，会调用 `zinfo->numaMap->allocateFromCore(vAddr, srcId)`。
+  - 如果访问的 Page 尚未在 `PageMap` 中注册，`NUMAMap` 会根据当前运行线程的 **NUMA Policy**（见下文）和当前核心所属的 Node，立即决定该 Page 应该物理上位于哪个 Node，并更新映射表。
+
+#### NUMA Policy Management
+
+zsim 完整地模拟了 Linux 内核的内存分配策略 (`set_mempolicy`)。
+
+- **Thread-Local Policy**:
+  - `threadPolicy` 哈希表存储了每个线程（由 `pid` 和 `tid` 标识）当前的 NUMA 策略。
+  - 支持的策略模式 (`mode`) 包括：
+    - **MPOL_DEFAULT**: 也就是 Local Allocation，优先分配在当前 Core 所属的 Node。
+    - **MPOL_BIND**: 强制分配在指定的 Node Set 中。
+    - **MPOL_INTERLEAVE**: 在指定的 Node Set 中通过 Round-Robin 方式交错分配 Page。
+    - **MPOL_PREFERRED**: 优先分配在特定 Node，失败则退化。
+
+- **Allocation Logic**:
+  - `addPagesThreadPolicy` 函数执行具体的分配逻辑。它会根据策略计算目标 Node，然后调用 `tryAddPagesLocal` 或 `tryAddPagesInterleaved` 将 Page 提交给 `PageMap`。
+
+#### Virtualization & Syscall Interception
+
+为了让 Guest Application 感知并控制模拟的 NUMA 环境，zsim 拦截并仿真了一系列与 NUMA 相关的 Linux Syscalls。这些 **Patch Functions** 确保了 Guest 的行为与模拟器的内部状态一致。
+
+- **Interception Mechanism**:
+  - zsim 通过 Pin 拦截系统调用，执行模拟逻辑后，通常会将 `SyscallNumber` 修改为 `SYS_getpid`（一个无副作用的调用）或直接返回错误码，从而**屏蔽 Host OS 的真实行为**。
+
+- **Key Syscalls**:
+  - **`SYS_get_mempolicy` / `SYS_set_mempolicy`**:
+    - zsim 拦截这些调用来读取或更新 `NUMAMap` 中的 `threadPolicy`。Guest 以为它在设置硬件策略，实际上它只是在更新模拟器的元数据。
+  - **`SYS_mbind`**:
+    - 这是最复杂的拦截之一。Guest 用它来将特定内存范围绑定到特定 Node。
+    - `PatchMbind` 会解析 Guest 传入的 `nodemask`，根据 `MPOL_MF_MOVE` 标志决定是否需要“移动”页面（在模拟器中即 `remove` 旧映射并 `add` 新映射）。
+  - **`SYS_move_pages`**:
+    - 允许 Guest 显式地将 Page 从一个 Node 移动到另一个 Node。zsim 更新 `PageMap` 以反映这一变化。
+  - **`SYS_munmap`**:
+    - 当 Guest 释放内存时，`PatchMunmap` 同步清除 `PageMap` 中的条目，防止内存泄漏或地址重用导致的映射错误。
+
+zsim 的 NUMA 仿真机制是一个**全栈式的软件模拟 (Full-Stack Software Emulation)**：
+
+1. **Topology Layer**: 通过 `patchRoot` 文件系统解耦了 Host 硬件拓扑，实现了可配置的静态 Core-to-Node 映射。
+2. **Memory Management Layer**: 通过 `PageMap` 和 `First-Touch` 机制，精确追踪每个 Virtual Page 的物理位置。
+3. **OS Interface Layer**: 通过拦截并仿真 `mbind`、`set_mempolicy` 等 Syscalls，欺骗 Guest Application，使其能够像在真实 NUMA 硬件上一样管理内存亲和性，从而不仅模拟了硬件延迟，还模拟了 OS 的内存管理行为。
+
 ### ProcessStats
 
 ### ProcStats
