@@ -725,4 +725,77 @@ zsim 的 NUMA 仿真机制是一个**全栈式的软件模拟 (Full-Stack Softwa
 
 ### ProcessStats
 
+`ProcessStats` 实现了一个 **Performance Counter Virtualization (性能计数器虚拟化)** 层。
+
+它的核心职责是将 **Physical Cores** (物理核心) 产生的硬件指标（Cycles 和 Instructions），正确地归属给 **Virtual Processes** (虚拟进程/负载)。因为 zsim 的 Core 模型是单调递增计数的，无法感知 **Context Switch**，所以 `ProcessStats` 需要拦截调度事件，对这些单调的计数器进行“切片”和分发。
+
+该类维护了两组并行的状态向量来实现记账：
+
+1.  **Process Accumulators** (`processCycles`, `processInstrs`):
+    * 以 `GroupIdx` (Process Group ID) 为索引。
+    * 存储特定 Process 在其整个生命周期内，在所有 Core 上运行累积的 **Total Aggregated** 指标。
+2.  **Core Snapshots** (`lastCoreCycles`, `lastCoreInstrs`):
+    * 以 `cid` (Physical Core ID) 为索引。
+    * 存储该 Core 上一次观测时的 **Last Observed** 硬件计数器值。
+    * 这相当于一个“水位标记”或“里程表读数”，用于计算当前时间片内的增量 (**Delta**)。
+
+记账逻辑的核心是计算自上次观测以来完成的 **Delta** ($\Delta$)。
+
+#### Incremental Accounting (`updateCore`)
+这是原子的更新单元，通常针对特定的 core `cid` 和 process `p` 调用。
+
+* **Logic**:
+    1.  读取当前硬件计数: $C_{curr} \leftarrow Core[cid].getCycles()$。
+    2.  读取快照: $C_{prev} \leftarrow lastCoreCycles[cid]$。
+    3.  计算增量: $\Delta = C_{curr} - C_{prev}$。
+    4.  累加到 Process: $ProcessCycles[p] \leftarrow ProcessCycles[p] + \Delta$。
+    5.  更新快照: $lastCoreCycles[cid] \leftarrow C_{curr}$。
+
+#### Eager Update on Context Switch (`notifyDeschedule`)
+当 `Scheduler` 执行 **Context Switch** (剥离线程) 时，该线程 *截止到这一刻* 所做的工作必须被立即结算。
+
+* **Caller**: `Scheduler::deschedule`。
+* **Mechanism**:
+    * Scheduler 确定 `outgoingPid` (失去 CPU 的进程) 和 `cid`。
+    * 调用 `notifyDeschedule(cid, outgoingPid)`。
+    * `ProcessStats` 立即触发 `updateCore`，将硬件计数器中挂起的 Cycles/Instructions 刷入 Process 的累加器中。
+
+#### Lazy Global Update (`update` / `getProcess...`)
+外部组件（如 `FFI` 逻辑或 `StatsBackend`）可能会在线程处于 **RUNNING** 状态（即近期未发生 Context Switch）时查询统计信息。
+
+* **Trigger**: 调用 `getProcessInstrs` 或 `getProcessCycles`。
+* **Mechanism (Lazy Evaluation)**:
+    1.  检查 `lastUpdatePhase`。如果等于 `zinfo->numPhases`，说明数据是新鲜的，直接返回。
+    2.  如果数据陈旧，触发 `update()`。
+    3.  **Global Sweep**: 遍历 **ALL** physical cores (`0` 到 `numCores`)。
+        * 通过 `Scheduler::getScheduledPid(cid)` 查询当前谁在该 Core 上运行。
+        * 如果有 Process 在运行，调用 `updateCore` 将当前 Phase (至今为止) 的工作量记账。
+    4.  更新 `lastUpdatePhase` 标记同步完成。
+
+Usage Scenarios (使用场景)：
+
+#### Scenario 1: Scheduler Preemption (Eager)
+1.  **Scheduler**: 决定将 Thread A (Process P1) 从 Core 5 换下。
+2.  **Scheduler**: 调用 `sched::deschedule`。
+3.  **ProcessStats**: `notifyDeschedule(5, P1)` 被调用。
+4.  **ProcessStats**: 计算 Core 5 自上次 Checkpoint 以来的 $\Delta$，加到 P1 的总数中，更新 Core 5 快照。
+5.  **Scheduler**: Thread A 被放入 `runQueue`。
+
+#### Scenario 2: FFI / Sampling (Lazy)
+1.  **FFI Logic**: 需要检查 Process P1 是否执行了 1,000,000 条指令，以决定是否从 **NFF** 切换到 **FF** 模式。
+2.  **FFI**: 调用 `processStats->getProcessInstrs(P1)`。
+3.  **ProcessStats**: 检测到 `lastUpdatePhase` 过期。
+4.  **ProcessStats**: 遍历所有 Cores。
+    * 发现 P1 当前正在 Core 2 和 Core 3 上运行。
+    * 分别计算 Core 2 和 Core 3 的 Delta。
+    * 将这些 Delta 加到 P1 的总数中。
+5.  **ProcessStats**: 返回 P1 最新的 Total Instructions。
+
+#### Scenario 3: Stats Dump
+1.  **StatsBackend**: 遍历在构造函数中注册的 `LambdaVectorStat`。
+2.  **Lambda**: 调用 `getProcessCycles(p)`。
+3.  **ProcessStats**: 触发 Lazy Update 逻辑（同 Scenario 2），确保 `zsim.out` 文件包含 Phase 结束时的精确计数值。
+
+`ProcessStats` 解耦了 **Execution Entity** (Core) 和 **Accounting Entity** (Process)。通过结合 **Event-Driven Hooks** (在 Context Switch 时) 和 **Lazy Synchronization** (在 Read 时)，它确保了在 Time-Sliced, Multi-Core Simulation 环境下，Process 级别的 Performance Metrics 是精确且实时的。
+
 ### ProcStats
