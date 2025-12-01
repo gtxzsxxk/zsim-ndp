@@ -799,3 +799,64 @@ Usage Scenarios (使用场景)：
 `ProcessStats` 解耦了 **Execution Entity** (Core) 和 **Accounting Entity** (Process)。通过结合 **Event-Driven Hooks** (在 Context Switch 时) 和 **Lazy Synchronization** (在 Read 时)，它确保了在 Time-Sliced, Multi-Core Simulation 环境下，Process 级别的 Performance Metrics 是精确且实时的。
 
 ### ProcStats
+
+ProcStats 是 zsim 中用于实现 Per-Process Statistics Virtualization (每进程统计虚拟化) 的核心组件。
+
+虽然 zsim 的 Core 和 Cache 等硬件模型是基于物理资源（Physical Resources）收集统计数据的（例如：Core 0 执行了多少指令，L2 Cache Bank 1 命中了多少次），但用户往往更关心 Workload-centric 的视角（例如：我的 Database 进程消耗了多少 Cache Miss，而不是 Core 5 消耗了多少）。
+
+ProcStats 的作用就是将底层的 Per-Core Statistics 动态映射并聚合为 Per-Process Statistics。`ProcStats` 维护了“物理”与“虚拟”两套统计视图，并通过缓冲区进行差分计算。
+
+- **`coreStats` (Source)**:
+    - 指向物理硬件统计树的根节点（通常是 `zinfo->rootStat` 的一个子集）。
+    - 这是一个 **AggregateStat**，其结构必须是 **Regular** 的，即包含 `numCores` 个结构完全相同的子统计树（分别对应 Core 0, Core 1...）。
+- **`procStats` (Destination)**:
+    - 这是 `ProcStats` 创建并维护的虚拟统计树。
+    - 它包含 `maxProcs`（最大进程数）个子树，每个子树的结构与 `coreStats` 中的单个 Core 子树完全镜像（Mirrored）。
+    - 其中的叶子节点不再是普通的 `Counter`，而是被替换为特殊的代理类 `ProcessCounter` 或 `ProcessVectorCounter`。
+- **`buf` & `lastBuf`**:
+    - 两个大小为 `bufSize`（所有 Core 统计项总和）的 `uint64_t` 数组。
+    - **`lastBuf`**: 存储上一次 `update()` 时的物理核心统计快照（Snapshot）。
+    - **`buf`**: 存储当前的物理核心统计值。
+    - 通过计算 `buf - lastBuf`，可以得到当前时间片内每个 Core 产生的统计增量 (**Delta**)。
+
+在构造函数 `ProcStats::ProcStats` 中：
+
+1.  **Validation**: 检查传入的 `coreStats` 是否符合要求（必须是 Regular Aggregate，且大小等于 Core 数量）。
+2.  **Buffer Allocation**: 计算整个统计树的大小（所有 Counter 的总数），并分配 `buf` 和 `lastBuf`。
+3.  **Virtual Tree Construction**:
+    - 遍历 `maxProcs`。
+    - 对于每个 Process，创建一个新的 `AggregateStat`。
+    - 调用 `replStat` (Replicate Stat) 函数，递归地复制 `coreStats` 的结构。
+    - **关键点**: 在复制过程中，底层的 `Counter` 被替换为 `ProcessCounter(this)`。这意味着当后端访问这些虚拟统计项时，会自动触发 `ProcStats::update()`。
+
+动态更新机制 (Dynamic Update Mechanism)核心逻辑位于 `update()` 函数中。它负责将物理 Core 的增量“分发”给当前正在该 Core 上运行的 Process。
+
+**调用时机**:
+1.  **Lazy Update**: 当 Backend 读取任何 `ProcessCounter` 的值时 (`get()`)，会触发 `update()`。
+2.  **Eager Update**: 当 `Scheduler` 执行上下文切换 (`deschedule`) 时，调用 `notifyDeschedule()`，进而触发 `update()`。
+
+**执行流程 (`update`)**:
+
+1.  **Phase Check**: 检查 `lastUpdatePhase`。如果当前 Phase 已经更新过，直接返回（避免重复计算）。
+2.  **Snapshot & Delta Calculation**:
+    - 调用 `DumpWalk` 将当前所有物理 Core 的统计值读入 `buf`。
+    - 计算 `delta = buf[i] - lastBuf[i]`。
+    - 交换 `buf` 和 `lastBuf` 指针（当前的 `buf` 变为下一次的 `lastBuf`）。此时 `buf` 数组中存储的是 **Delta**。
+3.  **Distribution (The "Magic")**:
+    - 遍历统计树结构。
+    - 对于每一个统计项（例如 `L1D Hits`），遍历所有 Physical Cores (`c = 0..numCores`)。
+    - **Query Scheduler**: 调用 `zinfo->sched->getScheduledPid(c)` 查询当前 Core `c` 正在运行哪个 Process `p`。
+    - **Accumulate**: 将 Core `c` 的增量 (`buf` 中的值) 累加到 Process `p` 对应的虚拟统计项 (`procStats` 树中的节点) 中。
+    - 使用 `IncWalk` 递归地更新 Aggregate 下的所有子节点。
+
+
+代码中有两个名字极其相似的类：
+
+1.  `ProcessStats` (在 `process_stats.h` 中)：
+    - **轻量级**。
+    - 只跟踪 **Cycles** 和 **Instructions** 这两个最关键的指标。
+    - 用于 `FFI` (Fast-Forwarding) 逻辑和简单的 IPC 统计。
+2.  **`ProcStats`** (在 `proc_stats.h` 中，即本分析对象)：
+    - **重量级、全功能**。
+    - 利用 Reflection-like 机制（遍历 Stat Tree），可以虚拟化 **任意** 硬件统计数据（L1 Miss, Branch Mispred, Prefetcher Events 等）。
+    - 允许用户通过 `sim.procStatsFilter` 配置项来筛选需要虚拟化的统计子集（例如只关心 Cache stats）。
