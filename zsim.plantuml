@@ -1,0 +1,272 @@
+@startuml
+title zsim Multi-Process Architecture & Simulation Flow (Detailed)
+skinparam maxMessageSize 200
+skinparam wrapWidth 300
+skinparam boxPadding 10
+autonumber
+
+' --- DEFINITIONS ---
+
+box "Host / Harness Layer" #WhiteSmoke
+    participant "User" as U
+    participant "zsim Harness\n(zsim_harness.cpp)" as H
+    participant "Parent Monitor\n(Supervisor)" as PM
+end box
+
+box "Shared Memory Region (glob_sim_info.h)" #LightYellow
+    participant "<b>zinfo</b> (GlobSimInfo)" as ZI
+    participant "<b>Scheduler</b>\n(Sched)" as Sched
+    participant "<b>ContentionSim</b>\n(Worker Threads)" as CSim
+    participant "<b>EventQueue</b>\n(Phase/Tick)" as EQ
+    participant "<b>NUMAMap</b>\n(Virt Mem)" as NM
+    participant "<b>PortVirtualizer</b>\n(Virt Ports)" as PV
+    participant "<b>ProcessStats</b>\n(Virt Counters)" as PStats
+    participant "<b>ProcStats</b>\n(Per-Proc Tree)" as PrStats
+end box
+
+box "Simulated Process A (TID A1)" #E6F2FF
+    participant "Proc A\n(PIN Tool)" as PA
+    participant "TID A1\n(Guest Code)" as TA1
+end box
+
+box "Simulated Process B (TID B1)" #FFE6F2
+    participant "Proc B\n(PIN Tool)" as PB
+    participant "TID B1\n(Guest Code)" as TB1
+end box
+
+box "Host Physical Cores (Execution Engine)" #F0FFF0
+    participant "<b>pCore 0 (CID 0)</b>" as PC0
+    participant "<b>pCore 1 (CID 1)</b>" as PC1
+end box
+
+' --- I. BOOTSTRAP ---
+
+== I. Bootstrap & Infrastructure Initialization ==
+
+U -> H: ./build/opt/zsim multi_proc.cfg
+activate H
+    H -> H: Parse Config (numProcesses=2)
+    H -> H: <b>PinCmd</b>::GetArgs() (Env Vars, Lib Paths)
+    H -> H: <b>LaunchProcess</b> (fork)
+    
+    H -> PM: Enter Monitor Loop
+    activate PM
+    
+    par Launch Processes
+        H -> PA: execvp(pin -t libzsim.so ...)
+        activate PA
+        H -> PB: execvp(pin -t libzsim.so ...)
+        activate PB
+    end
+deactivate H
+
+' --- II. INITIALIZATION ---
+
+par Parallel Initialization
+    group Proc A (Process 0 - Master)
+        PA -> PA: <b>SimInit()</b>
+        activate PA
+        PA -> ZI: Init <b>zinfo</b> (Shared Mem)
+        PA -> Sched: new <b>Scheduler</b> (Init contexts, freeList, watchdog)
+        PA -> CSim: new <b>ContentionSim</b> (Spawn SimThreads, Init PrioQueues)
+        PA -> EQ: new <b>EventQueue</b>
+        
+        PA -> ZI: <b>InitSystem()</b>
+        note right: New SimpleCore/OOOCore, BaseCache, MemController.\nWeld hierarchy via setParents() / setChildren().
+
+        PA -> NM: <b>InitNUMA()</b> -> new NUMAMap (Read patchRoot)
+        PA -> PV: new <b>PortVirtualizer</b> (Init realToVirt maps)
+        
+        PA -> PStats: new <b>ProcessStats</b> (Virt Counters)
+        PA -> PrStats: new <b>ProcStats</b> (Aggregates)
+        note right: Replicates physical stats tree for each virtual process.
+        
+        PA -> PA: Init fPtrs, cids, Register PIN Hooks
+        deactivate PA
+    end
+
+    group Proc B (Process 1 - Slave)
+        PB -> PB: <b>SimInit()</b>
+        activate PB
+        PB -> ZI: Attach to existing <b>zinfo</b>
+        PB -> PB: Init local fPtrs, cids, Register PIN Hooks
+        deactivate PB
+    end
+end
+
+group Virtualization & Instrumentation Setup (Both Procs)
+    PA -> PA: <b>FFIInit()</b> -> FFITrackNFFInterval (AdaptiveEvent)
+    PA -> PA: <b>VirtInit()</b>
+    note right of PA: Patch Syscalls: \nFS (sys_open),\nPorts (sys_bind),\nTime (sys_nanosleep),\nNUMA (sys_mbind)
+    PA -> PA: <b>VdsoInit()</b> (Patch clock_gettime)
+    PA -> PA: <b>PIN_SpawnInternalThread(FFThread)</b>
+    note right: FFThread blocks on futex, waiting for FF/NFF toggle.
+end
+
+H -> PA: <b>PIN_StartProgram()</b>
+H -> PB: <b>PIN_StartProgram()</b>
+
+' --- III. EXECUTION LOOP ---
+
+== II. Bound Phase: Parallel Execution & Syscall Interception ==
+
+note across: Initial State: TID A1 is mapped to pCore 0 (CID 0). TID B1 is mapped to pCore 1 (CID 1).
+
+loop Bound-Weave Cycle
+
+    par Parallel Execution
+        group pCore 0 Running TID A1 (Standard execution)
+            PA -> TA1: <b>Trace()</b> -> JIT
+            TA1 -> PC0: Execute <b>BblFunc()</b>
+            activate PC0
+            
+            PC0 -> PC0: curCycle += BblCycles
+            
+            PC0 -> CSim: <b>enqueueSynced()</b> (L1 Access)
+            note right: Event added to Domain PrioQueue.\nNo latency calculated yet.
+            
+            opt First-Touch Memory Allocation
+                PC0 -> NM: <b>numaMap->allocateFromCore(vAddr, srcId)</b>
+                NM -> NM: Update PageMap (Chunk-based Sparse Map)
+            end
+            
+            opt FFI Check
+                 PC0 -> PStats: <b>getProcessInstrs(p)</b>
+                 PStats -> PStats: Lazy Update (Iterate cores, add deltas)
+            end
+        end
+
+        group pCore 1 Running TID B1 (Syscall Interception)
+            TB1 -> PB: <b>SyscallEnter(sys_bind)</b>
+            
+            PB -> Sched: <b>scheduler->leave()</b>
+            note right: Mark Context as UNUSED/OUT.\nRelease pCore 1.
+            
+            PB -> PV: <b>VirtSyscallEnter (PatchBind)</b>
+            note right: PortVirt: Change Port 80 -> 0 (Ephemeral).
+            
+            TB1 -> TB1: Execute Kernel Syscall (bind)
+            
+            TB1 -> PB: <b>SyscallExit()</b>
+            PB -> PV: <b>VirtSyscallExit</b>
+            note right: PortVirt: Map RealPort(45123) -> VirtPort(80).
+            
+            PB -> Sched: <b>scheduler->join()</b>
+            note right: Arbitrate: Check Affinity -> FreeList -> Preemption.\nAcquire pCore (Assume pCore 1 available).
+        end
+    end
+
+    ' --- IV. BARRIER & WEAVE ---
+
+    == III. Barrier & Weave Phase: Global Synchronization ==
+
+    note across: pCores reach phaseEndCycle.
+
+    par Enter Barrier
+        PC0 -> Sched: <b>TakeBarrier(tid=A1, cid=0)</b>
+        activate Sched
+        Sched -> Sched: <b>sync()</b> -> futex_wait
+        deactivate PC0
+        
+        PC1 -> Sched: <b>TakeBarrier(tid=B1, cid=1)</b>
+        deactivate PC1
+    end
+
+    critical Last Thread Reaches Barrier
+        Sched -> Sched: <b>callback()</b> -> Increment curPhase
+        
+        Sched -> ZI: <b>EndOfPhaseActions()</b>
+        activate ZI
+        
+        ZI -> ZI: <b>profSimTime->transition(PROF_WEAVE)</b>
+        
+        group Contention Simulation
+            ZI -> CSim: <b>simulatePhase()</b>
+            activate CSim
+            CSim -> CSim: Unpark SimThreads
+            CSim -> CSim: <b>TimingEvent::simulate()</b> (DRAM tick, Cache latency)
+            CSim -> CSim: Handle <b>CrossingEvents</b> (Inter-domain sync)
+            CSim -> CSim: Park SimThreads
+            deactivate CSim
+        end
+
+        group Event Management
+            ZI -> EQ: <b>tick()</b>
+            activate EQ
+            EQ -> EQ: Check Deadlocks (Watchdog)
+            EQ -> EQ: Process <b>PeriodicStatsDumpEvent</b>
+            deactivate EQ
+        end
+
+        deactivate ZI
+    end
+
+    ' --- V. SCHEDULING ---
+
+    == IV. Scheduling Decision: Context Switching ==
+
+    note right of Sched: Inside Scheduler::callback().\nQuantum reached? -> Reshuffle.
+
+    group Logic: Context Switch (Swap A1 and B1)
+        Sched -> Sched: <b>schedTick()</b>
+        Sched -> Sched: Identify <b>Victim Thread</b> (TID A1 on CID 0)
+        Sched -> Sched: Select <b>Next Thread</b> (TID B1 from RunQueue/Other)
+        
+        Sched -> Sched: <b>deschedule(TID A1)</b>
+        activate Sched
+            Sched -> PStats: <b>notifyDeschedule(cid=0, pid=A)</b>
+            PStats -> PStats: <b>updateCore(cid=0)</b>
+            note right: Flush pending cycles/instrs from Core 0 to Process A stats.
+            
+            Sched -> PrStats: <b>notifyDeschedule(cid=0)</b>
+            PrStats -> PrStats: <b>update()</b> -> Distribute delta to Process A Tree.
+        deactivate Sched
+
+        Sched -> Sched: <b>schedule(TID B1, CID 0)</b>
+        note right: Update Mappings: cids[B1]=0, cids[A1]=1 (Conceptually)
+        
+        Sched -> Sched: Set <b>handoffThread</b> pointers
+    end
+
+    == V. Resume & Handoff ==
+
+    Sched --> PC0: Return <b>newCid</b> (e.g., Running TID B1)
+    activate PC0
+    
+    Sched --> PC1: Return <b>newCid</b> (e.g., Running TID A1)
+    deactivate Sched
+    activate PC1
+    
+    PC0 -> PC0: if (newCid != cid) <b>break BblFunc loop</b>
+    note right: Context Switch Detected! \nCore object changed. Reload fPtrs.
+    
+    PC1 -> PC1: if (newCid != cid) <b>break BblFunc loop</b>
+    
+end
+
+' --- VI. TERMINATION ---
+
+== VI. Termination & Data Dump ==
+
+TA1 -> PA: exit_group()
+PA -> PA: <b>Fini()</b> -> <b>SimEnd()</b>
+PA -> ZI: <b>notifyEnd()</b> (Atomic Decrement globalActiveProcs)
+
+group Process 0 Cleanup (Master)
+    PA -> ZI: while (globalActiveProcs > 0) wait
+    
+    PA -> ZI: <b>StatsBackend::dump()</b>
+    activate ZI
+        ZI -> ZI: Freeze AggregateStats
+        ZI -> PrStats: <b>DumpWalk()</b>
+        note right: Collect final data from all Cores & Virtual Procs
+        ZI -> U: Write <b>zsim.out</b> (HDF5 / Text)
+    deactivate ZI
+    
+    PA -> Sched: notifyTermination()
+end
+
+PM -> H: Child Process Exited
+H -> U: Simulation Complete
+
+@enduml
