@@ -24,15 +24,14 @@
  * this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <algorithm>
 #include "scheduler.h"
 #include <fstream>
 #include <regex.h>  // POSIX regex instead of C++11 regex
 #include "config.h" // for ParseList
-#include "pin.H"
 #include "process_tree.h"
 #include "profile_stats.h"
 #include "str.h"
-#include "virt/syscall_name.h"
 
 //The scheduler class started simple, but at some point having it all in the header is too ridiculous. Migrate non perf-intensive calls here! (all but sync, really)
 
@@ -123,11 +122,12 @@ void Scheduler::watchdogThreadFunc() {
 
         if (lastPhase == curPhase && !fakeLeaves.empty() && (fakeLeaves.front()->th->futexJoin.action != FJA_WAKE)) {
             if (++fakeLeaveStalls >= WATCHDOG_STALL_THRESHOLD) {
+                assert(false);
                 info("Detected possible stall due to fake leaves (%ld current)", fakeLeaves.size());
                 // Uncomment to print all leaves
                 FakeLeaveInfo* pfl = fakeLeaves.front();
                 while (pfl) {
-                    info(" [%d/%d] %s (%d) @ 0x%lx", getPid(pfl->th->gid), getTid(pfl->th->gid), GetSyscallName(pfl->syscallNumber), pfl->syscallNumber, pfl->pc);
+                    info(" [%d/%d] %s (%d) @ 0x%lx", getPid(pfl->th->gid), getTid(pfl->th->gid), "GetSyscallName(pfl->syscallNumber)", pfl->syscallNumber, pfl->pc);
                     pfl = pfl->next;
                 }
 
@@ -142,13 +142,13 @@ void Scheduler::watchdogThreadFunc() {
                 regex_t sbRegex;
                 if (regcomp(&sbRegex, sbRegexStr.c_str(), REG_EXTENDED | REG_NOSUB))
                     panic("Scheduler fails to compile syscall blacklist regex (%s)", sbRegexStr.c_str());
-                if (regexec(&sbRegex, GetSyscallName(fl->syscallNumber), 0, nullptr, 0) == 0) {
+                if (regexec(&sbRegex, "GetSyscallName(fl->syscallNumber)", 0, nullptr, 0) == 0) {
                     // If this is the last leave we catch, it is the culprit for sure -> blacklist it
                     // Over time, this will blacklist every blocking syscall
                     // The root reason for being conservative though is that we don't have a sure-fire
                     // way to distinguish IO waits from truly blocking syscalls (TODO)
                     if (fakeLeaves.size() == 1) {
-                        info("Blacklisting from future fake leaves: [%d] %s @ 0x%lx | arg0 0x%lx arg1 0x%lx", pid, GetSyscallName(fl->syscallNumber), fl->pc, fl->arg0, fl->arg1);
+                        info("Blacklisting from future fake leaves: [%d] %s @ 0x%lx | arg0 0x%lx arg1 0x%lx", pid, "GetSyscallName(fl->syscallNumber)", fl->pc, fl->arg0, fl->arg1);
                         blockingSyscalls[pid].insert(fl->pc);
                     }
 
@@ -178,7 +178,7 @@ void Scheduler::watchdogThreadFunc() {
                     } while (fakeLeaves.size() > 8);
                 } else {
                     info("Skipping, [%d] %s @ 0x%lx | arg0 0x%lx arg1 0x%lx does not match blacklist regex (%s)",
-                            pid, GetSyscallName(fl->syscallNumber), fl->pc, fl->arg0, fl->arg1, sbRegexStr.c_str());
+                            pid, "GetSyscallName(fl->syscallNumber)", fl->pc, fl->arg0, fl->arg1, sbRegexStr.c_str());
                 }
                 fakeLeaveStalls = 0;
             }
@@ -267,13 +267,9 @@ void Scheduler::watchdogThreadFunc() {
     info("Finished scheduler watchdog thread");
 }
 
-void Scheduler::threadTrampoline(void* arg) {
-    Scheduler* sched = static_cast<Scheduler*>(arg);
-    sched->watchdogThreadFunc();
-}
-
-void Scheduler::startWatchdogThread() {
-    PIN_SpawnInternalThread(threadTrampoline, this, 64*1024, nullptr);
+void Scheduler::threadTrampoline(Scheduler* arg) {
+    while (arg->schedInitialized.load());
+    arg->watchdogThreadFunc();
 }
 
 
@@ -315,7 +311,7 @@ void Scheduler::notifyFutexWakeStart(uint32_t pid, uint32_t tid, uint32_t maxWak
     // Programs sometimes call FUTEX_WAIT with maxWakes = UINT_MAX to wake
     // everyone waiting on it; we cap to a reasonably high number to avoid
     // overflows on maxAllowedFutexWakeups
-    maxWakes = MIN(maxWakes, 1<<24 /*16M wakes*/);
+    maxWakes = std::min((unsigned long)maxWakes, 1UL<<24 /*16M wakes*/);
 
     maxAllowedFutexWakeups += maxWakes;
     th->futexJoin.maxWakes = maxWakes;

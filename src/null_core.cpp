@@ -23,6 +23,7 @@
  * this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <algorithm>
 #include "null_core.h"
 #include "zsim.h"
 
@@ -52,7 +53,7 @@ void NullCore::bbl(BblInfo* bblInfo) {
 void NullCore::contextSwitch(int32_t gid) {}
 
 void NullCore::join() {
-    curCycle = MAX(curCycle, zinfo->globPhaseCycles);
+    curCycle = std::max(curCycle, zinfo->globPhaseCycles);
     phaseEndCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
 }
 

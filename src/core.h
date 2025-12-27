@@ -27,15 +27,112 @@
 #define CORE_H_
 
 #include <stdint.h>
-#include "decoder.h"
 #include "g_std/g_string.h"
 #include "stats.h"
+#include <memory>
 
-struct BblInfo {
-    uint32_t instrs;
-    uint32_t bytes;
-    DynBbl oooBbl[0]; //0 bytes, but will be 1-sized when we have an element (and that element has variable size as well)
+typedef uint32_t INS;
+typedef uint64_t THREADID;
+typedef uint64_t ADDRINT;
+typedef bool BOOL;
+
+struct BranchInformation {
+    uint8_t branchTaken;
+    ADDRINT branchTakenNpc;
 };
+
+struct BasicBlockLoadStore {
+    ADDRINT addr1;
+    ADDRINT addr2;
+    ADDRINT addr3;
+    uint64_t value;
+    uint8_t entryValid;
+    struct BasicBlockLoadStore *next;
+};
+
+struct BasicBlock {
+    size_t codeBytes;
+    uint8_t *code;
+    size_t loadStores;
+    struct BasicBlockLoadStore *loadStore;
+    struct BranchInformation branchInfo;
+    uint64_t virtualPc;
+    uint64_t midgardPc;
+    uint64_t physicalPc;
+    size_t programIndex;
+
+    void resetProgramIndex() {
+        programIndex = 0;
+    }
+    
+    INS getHeadInstruction(size_t *index = nullptr, uint8_t *instLength = nullptr, bool lookahead = false) {
+        if (programIndex >= codeBytes) {
+            programIndex += 4;
+            return 0xffffffff;
+        }
+        if (index) {
+            *index = programIndex;
+        }
+        INS tryFetch = *(INS *)(code + programIndex);
+        uint8_t firstTwoBits = tryFetch & 0x03;
+        switch (firstTwoBits) {
+            case 0x0:
+            case 0x1:
+            case 0x2:
+                if (instLength) {
+                    *instLength = 2;
+                }
+                programIndex += lookahead ? 0 : 2;
+                return tryFetch & 0xffff;
+            default:
+                if (instLength) {
+                    *instLength = 4;
+                }
+                programIndex += lookahead ? 0 : 4;
+                return tryFetch;
+        }
+    }
+
+    size_t getInstructionCount() {
+        size_t ret = 0;
+        resetProgramIndex();
+        for (getHeadInstruction(); !endOfBlock(); getHeadInstruction()) {
+            ret++;
+        }
+        resetProgramIndex();
+        return ret;
+    }
+
+    bool endOfBlock() {
+        return programIndex > codeBytes;
+    }
+
+    ~BasicBlock() {
+        delete[] code;
+        for (size_t i = 0; i < loadStores; i++) {
+            auto next = loadStore[i].next;
+            while (next) {
+                auto cur = next;
+                next = next->next;
+                delete[] cur;
+            }
+        }
+        delete[] loadStore;
+    }
+};
+
+struct FrontendTrace {
+    struct BasicBlock *blocks;
+    size_t count;
+
+    FrontendTrace() = default;
+
+    ~FrontendTrace() {
+        delete[] blocks;
+    }
+};
+
+struct BblInfo;
 
 /* Analysis function pointer struct
  * As an artifact of having a shared code cache, we need these to be the same for different core types.

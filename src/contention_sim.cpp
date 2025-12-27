@@ -51,8 +51,8 @@ bool ContentionSim::CompareDomains::operator()(DomainData* d1, DomainData* d2) c
 }
 
 
-void ContentionSim::SimThreadTrampoline(void* arg) {
-    ContentionSim* csim = static_cast<ContentionSim*>(arg);
+void ContentionSim::SimThreadTrampoline(ContentionSim* arg) {
+    ContentionSim* csim = arg;
     uint32_t thid = __sync_fetch_and_add(&csim->threadTicket, 1);
     csim->simThreadLoop(thid);
 }
@@ -93,7 +93,7 @@ ContentionSim::ContentionSim(uint32_t _numDomains, uint32_t _numSimThreads) {
     threadTicket = 0;
     __sync_synchronize();
     for (uint32_t i = 0; i < numSimThreads; i++) {
-        PIN_SpawnInternalThread(SimThreadTrampoline, this, 1024*1024, nullptr);
+        simThreadVec.emplace_back(SimThreadTrampoline, this);
     }
 
     lastCrossing = gm_calloc<CrossingEventInfo>(numDomains*numDomains*MAX_THREADS); //TODO: refine... this allocs too much

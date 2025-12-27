@@ -1,4 +1,5 @@
 #!/bin/bash
 
-bear -- scons -j64
-
+export LIBCONFIGPATH=$HOME/.local
+export HDF5PATH=$HOME/.local
+bear -- scons --d -j64

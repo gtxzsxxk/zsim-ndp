@@ -29,7 +29,7 @@
 #include <algorithm>
 #include <queue>
 #include <string>
-#include "core.h"
+#include "decoder.h"
 #include "g_std/g_multimap.h"
 #include "memory_hierarchy.h"
 #include "ooo_core_recorder.h"

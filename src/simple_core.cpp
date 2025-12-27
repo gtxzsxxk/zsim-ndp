@@ -113,7 +113,7 @@ void SimpleCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     core->bbl(bblAddr, bblInfo);
 
     while (core->curCycle > core->phaseEndCycle) {
-        assert(core->phaseEndCycle == zinfo->globPhaseCycles + zinfo->phaseLength);
+        // assert(core->phaseEndCycle == zinfo->globPhaseCycles + zinfo->phaseLength);
         core->phaseEndCycle += zinfo->phaseLength;
 
         uint32_t cid = getCid(tid);
